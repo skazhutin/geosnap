@@ -10,7 +10,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 if ! docker compose version >/dev/null 2>&1; then
-  echo "docker compose is required but unavailable" >&2
+  echo "docker compose is required but was not found" >&2
   exit 1
 fi
 
