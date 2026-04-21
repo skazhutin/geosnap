@@ -178,16 +178,16 @@ export MAPILLARY_ACCESS_TOKEN=YOUR_TOKEN
 Mapillary (только metadata + URL):
 
 ```bash
-python -m ml.ingestion.mapillary_loader --output-json data/raw/mapillary_raw.json --request-pause-sec 0.25 --request-retries 5 --backoff-sec 1.5
+python -m ml.ingestion.mapillary_loader --output-json data/raw/mapillary_raw.json --request-pause-sec 0.25 --request-retries 5 --backoff-sec 1.5 --max-pages-per-tile 200
 ```
 
 KartaView (только metadata + URL):
 
 ```bash
-python -m ml.ingestion.kartaview_loader --output-json data/raw/kartaview_raw.json --request-pause-sec 0.25 --request-retries 5 --backoff-sec 1.5
+python -m ml.ingestion.kartaview_loader --output-json data/raw/kartaview_raw.json --request-pause-sec 0.25 --request-retries 5 --backoff-sec 1.5 --max-pages-per-tile 200
 ```
 
-> Загрузчики не скачивают изображения: они сохраняют только metadata + `image_url`.
+> Загрузчики не скачивают изображения: они сохраняют только metadata + `image_url`, проходят пагинацию API и ограничены `--max-pages-per-tile` для защиты от бесконечных циклов.
 
 ### 3) Объединить источники в единый manifest
 

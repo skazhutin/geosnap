@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import uuid
 from pathlib import Path
 from typing import Any
 
 from ml.ingestion.common import read_json
+
+
+SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def safe_filename(value: str) -> str:
+    sanitized = SAFE_FILENAME_RE.sub("_", value).strip("._")
+    return sanitized or "unknown"
 
 
 def normalize_record(source: str, row: dict[str, Any]) -> dict[str, Any] | None:
@@ -20,16 +29,18 @@ def normalize_record(source: str, row: dict[str, Any]) -> dict[str, Any] | None:
 
     source_l = source.lower()
     attribution = "Mapillary" if source_l == "mapillary" else "KartaView"
+    record_id = str(uuid.uuid4())
+    safe_source_image_id = safe_filename(str(source_image_id))
 
     return {
-        "id": str(uuid.uuid4()),
+        "id": record_id,
         "source": source_l,
         "source_image_id": str(source_image_id),
         "lat": float(lat),
         "lon": float(lon),
         "captured_at": row.get("timestamp"),
         "heading": row.get("heading"),
-        "image_path": f"data/raw/images/{source_l}/{source_image_id}.jpg",
+        "image_path": f"data/raw/images/{source_l}/{record_id}_{safe_source_image_id}.jpg",
         "thumb_path": row.get("thumb_path"),
         "license": row.get("license") or "CC-BY-SA",
         "attribution": row.get("attribution") or attribution,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -38,29 +39,43 @@ def download_file(
     session: Any | None = None,
 ) -> bool:
     """Download URL to destination with retry and skip-if-exists behavior."""
-    if destination.exists() and destination.stat().st_size > 0:
+    if retries < 1:
+        raise ValueError("retries must be >= 1")
+    if destination.exists() and destination.stat().st_size >= 10_000:
         return True
 
     ensure_parent(destination)
+    created_session = False
     if session is None:
         import requests
 
         client = requests.Session()
+        created_session = True
     else:
         client = session
 
-    for attempt in range(1, retries + 1):
-        try:
-            with client.get(url, stream=True, timeout=timeout_sec) as response:
-                response.raise_for_status()
-                with destination.open("wb") as fp:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            fp.write(chunk)
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("download failed (%s/%s): %s -> %s", attempt, retries, url, exc)
-            if attempt == retries:
-                return False
-            time.sleep(backoff_sec * attempt)
-    return False
+    try:
+        for attempt in range(1, retries + 1):
+            tmp_path = destination.with_suffix(destination.suffix + ".part")
+            try:
+                with client.get(url, stream=True, timeout=timeout_sec) as response:
+                    response.raise_for_status()
+                    with tmp_path.open("wb") as fp:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                fp.write(chunk)
+                os.replace(tmp_path, destination)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                if tmp_path.exists():
+                    tmp_path.unlink(missing_ok=True)
+                logger.warning("download failed (%s/%s): %s -> %s", attempt, retries, url, exc)
+                if attempt == retries:
+                    if destination.exists() and destination.stat().st_size < 10_000:
+                        destination.unlink(missing_ok=True)
+                    return False
+                time.sleep(backoff_sec * attempt)
+        return False
+    finally:
+        if created_session:
+            client.close()

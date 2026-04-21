@@ -5,6 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 
+def _first_present(item: dict[str, Any], keys: list[str]) -> Any:
+    for key in keys:
+        if key in item and item[key] is not None:
+            return item[key]
+    return None
+
+
 def parse_mapillary_item(item: dict[str, Any]) -> dict[str, Any] | None:
     image_id = item.get("id")
     geometry = item.get("geometry") or item.get("computed_geometry")
@@ -38,9 +45,9 @@ def parse_mapillary_item(item: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def parse_kartaview_item(item: dict[str, Any]) -> dict[str, Any] | None:
-    image_id = item.get("id") or item.get("photoId") or item.get("imageId")
-    lat = item.get("lat") or item.get("latitude") or item.get("gpsLat")
-    lon = item.get("lon") or item.get("lng") or item.get("longitude") or item.get("gpsLng")
+    image_id = _first_present(item, ["id", "photoId", "imageId"])
+    lat = _first_present(item, ["lat", "latitude", "gpsLat"])
+    lon = _first_present(item, ["lon", "lng", "longitude", "gpsLng"])
     if image_id is None or lat is None or lon is None:
         return None
 

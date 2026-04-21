@@ -29,6 +29,8 @@ def _request_with_retry(
     retries: int,
     backoff_sec: float,
 ) -> requests.Response:
+    if retries < 1:
+        raise ValueError("retries must be >= 1")
     for attempt in range(1, retries + 1):
         response = session.get(url, params=params, timeout=30)
         if response.status_code in {429, 500, 502, 503, 504}:
@@ -48,35 +50,64 @@ def _request_with_retry(
     return response
 
 
+def _extract_page(payload: Any) -> tuple[list[dict[str, Any]], bool]:
+    if isinstance(payload, dict):
+        if isinstance(payload.get("result"), dict):
+            result = payload["result"]
+            data = result.get("data")
+            if not isinstance(data, list):
+                data = []
+            current_page = result.get("currentPage") or result.get("page")
+            total_pages = result.get("totalPages")
+            has_more = result.get("hasMore")
+            if isinstance(has_more, bool):
+                return data, has_more
+            if isinstance(current_page, int) and isinstance(total_pages, int):
+                return data, current_page < total_pages
+            return data, len(data) > 0
+        data = payload.get("data")
+        if isinstance(data, list):
+            return data, len(data) > 0
+    if isinstance(payload, list):
+        return payload, len(payload) > 0
+    return [], False
+
+
 def fetch_tile(
     session: requests.Session,
     bbox: tuple[float, float, float, float],
     limit: int,
     retries: int,
     backoff_sec: float,
+    max_pages: int,
 ) -> list[dict[str, Any]]:
     min_lon, min_lat, max_lon, max_lat = bbox
-    params = {
-        "ipp": limit,
-        "bbox": f"{min_lon},{min_lat},{max_lon},{max_lat}",
-    }
-    response = _request_with_retry(
-        session,
-        url=KARTAVIEW_API_URL,
-        params=params,
-        retries=retries,
-        backoff_sec=backoff_sec,
-    )
-    payload = response.json()
+    page = 1
+    all_items: list[dict[str, Any]] = []
 
-    if isinstance(payload, dict):
-        if isinstance(payload.get("result"), dict) and isinstance(payload["result"].get("data"), list):
-            return payload["result"]["data"]
-        if isinstance(payload.get("data"), list):
-            return payload["data"]
-    if isinstance(payload, list):
-        return payload
-    return []
+    while page <= max_pages:
+        params = {
+            "ipp": limit,
+            "page": page,
+            "bbox": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+        }
+        response = _request_with_retry(
+            session,
+            url=KARTAVIEW_API_URL,
+            params=params,
+            retries=retries,
+            backoff_sec=backoff_sec,
+        )
+        payload = response.json()
+        page_items, has_more = _extract_page(payload)
+        all_items.extend(page_items)
+        if not has_more or len(page_items) == 0:
+            break
+        page += 1
+
+    if page > max_pages:
+        logger.warning("KartaView tile pagination truncated at max_pages=%s", max_pages)
+    return all_items
 
 
 def run(
@@ -85,6 +116,7 @@ def run(
     request_pause_sec: float,
     request_retries: int,
     backoff_sec: float,
+    max_pages_per_tile: int,
 ) -> None:
     existing: list[dict[str, Any]] = read_json(output_json, default=[])
     seen_ids = {row.get("id") for row in existing}
@@ -101,6 +133,7 @@ def run(
                 limit=limit_per_tile,
                 retries=request_retries,
                 backoff_sec=backoff_sec,
+                max_pages=max_pages_per_tile,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("tile request failed for %s: %s", tile, exc)
@@ -132,6 +165,7 @@ def main() -> None:
     parser.add_argument("--request-pause-sec", type=float, default=0.25)
     parser.add_argument("--request-retries", type=int, default=5)
     parser.add_argument("--backoff-sec", type=float, default=1.5)
+    parser.add_argument("--max-pages-per-tile", type=int, default=200)
     args = parser.parse_args()
 
     run(
@@ -140,6 +174,7 @@ def main() -> None:
         request_pause_sec=args.request_pause_sec,
         request_retries=args.request_retries,
         backoff_sec=args.backoff_sec,
+        max_pages_per_tile=args.max_pages_per_tile,
     )
 
 

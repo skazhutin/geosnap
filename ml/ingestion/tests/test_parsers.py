@@ -35,6 +35,20 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed["lat"], 55.76)
         self.assertEqual(parsed["lon"], 37.62)
 
+    def test_parse_kartaview_item_keeps_zero_values(self) -> None:
+        parsed = parse_kartaview_item(
+            {
+                "id": "0",
+                "lat": 0.0,
+                "lon": 0.0,
+                "timestamp": "2025-01-01",
+                "url": "https://example.com/zero.jpg",
+            }
+        )
+        assert parsed is not None
+        self.assertEqual(parsed["lat"], 0.0)
+        self.assertEqual(parsed["lon"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

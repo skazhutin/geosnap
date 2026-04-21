@@ -1,6 +1,6 @@
 import unittest
 
-from ml.ingestion.merge_sources import deduplicate_spatial, haversine_meters, normalize_record
+from ml.ingestion.merge_sources import deduplicate_spatial, haversine_meters, normalize_record, safe_filename
 
 
 class MergeSourcesTests(unittest.TestCase):
@@ -11,6 +11,12 @@ class MergeSourcesTests(unittest.TestCase):
         )
         assert row is not None
         self.assertEqual(row["download_url"], "https://x/y.jpg")
+        self.assertTrue(row["image_path"].startswith("data/raw/images/mapillary/"))
+
+    def test_safe_filename_strips_path_chars(self) -> None:
+        value = safe_filename("../unsafe\\\\id")
+        self.assertNotIn("/", value)
+        self.assertNotIn("\\\\", value)
 
     def test_haversine_small_distance(self) -> None:
         dist = haversine_meters(55.75, 37.61, 55.75001, 37.61001)
