@@ -14,6 +14,11 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl is required but was not found in PATH" >&2
+  exit 1
+fi
+
 cleanup() {
   docker compose down -v >/dev/null 2>&1 || true
 }
