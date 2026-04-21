@@ -5,6 +5,6 @@ __pycache__/
 
 apps/frontend/node_modules/
 apps/frontend/dist/
-*.tsbuildinfo
+apps/frontend/*.tsbuildinfo
 apps/frontend/vite.config.js
 apps/frontend/vite.config.d.ts

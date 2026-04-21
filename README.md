@@ -80,6 +80,53 @@ infra/
   scripts/        # инфраструктурные скрипты
 ```
 
+## Запуск проекта
+
+### 1) Подготовка переменных окружения
+
+Создайте `.env` в корне проекта (или отредактируйте существующий):
+
+```env
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=geo
+POSTGRES_PORT=5432
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/geo
+```
+
+### 2) Запуск в Docker Compose
+
+Из корня репозитория:
+
+```bash
+docker compose up --build
+```
+
+Сервисы будут доступны:
+
+- Backend API: `http://localhost:8000`
+- Backend health: `http://localhost:8000/health`
+- Frontend: `http://localhost:3000`
+
+Остановка:
+
+```bash
+docker compose down
+```
+
+### 3) Быстрая проверка старта backend + db
+
+Для автоматической проверки используйте скрипт:
+
+```bash
+infra/scripts/verify_backend_start.sh
+```
+
+Скрипт:
+- поднимает `db` и `backend`;
+- ждёт успешный ответ `GET /health`;
+- печатает health-ответ;
+- по завершении останавливает и удаляет только контейнеры `db` и `backend`, не затрагивая тома и другие сервисы Compose-проекта.
 ## Локальный запуск проверок CI
 
 ### Тесты / базовые проверки runtime
