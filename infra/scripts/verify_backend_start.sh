@@ -20,7 +20,8 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 cleanup() {
-  docker compose down -v >/dev/null 2>&1 || true
+  docker compose stop backend db >/dev/null 2>&1 || true
+  docker compose rm -f backend db >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
