@@ -78,3 +78,33 @@ data/
 infra/
   db/             # инициализация БД
   scripts/        # инфраструктурные скрипты
+```
+
+## Локальный запуск проверок CI
+
+### Тесты / базовые проверки runtime
+
+```bash
+cd apps/frontend
+npm ci
+npm run build
+
+cd ../..
+python -m pip install -r apps/backend/requirements.txt
+PYTHONPATH=apps/backend python -c "from app.main import app; assert app.title == 'GeoSnap API'"
+```
+
+### Smoke check запуска проекта
+
+```bash
+docker compose up -d --build
+timeout 120 bash -c 'until curl -fsS http://127.0.0.1:8000/health | grep -q "\"status\":\"ok\""; do sleep 2; done'
+docker compose down -v
+```
+
+## Обязательный CI check перед merge
+
+1. Откройте `Settings` → `Branches` → `Branch protection rules`.
+2. Создайте/измените правило для default branch (`main`).
+3. Включите `Require status checks to pass before merging`.
+4. Выберите check `CI / test-and-smoke`.
