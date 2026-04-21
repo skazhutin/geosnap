@@ -14,7 +14,7 @@ class ParserTests(unittest.TestCase):
                 "sequence": {"id": "seq-1"},
             }
         )
-        assert parsed is not None
+        self.assertIsNotNone(parsed)
         self.assertEqual(parsed["id"], "123")
         self.assertEqual(parsed["lat"], 55.75)
         self.assertEqual(parsed["lon"], 37.61)
@@ -30,7 +30,7 @@ class ParserTests(unittest.TestCase):
                 "fileurlProc": "https://example.com/kv-1.jpg",
             }
         )
-        assert parsed is not None
+        self.assertIsNotNone(parsed)
         self.assertEqual(parsed["id"], "kv-1")
         self.assertEqual(parsed["lat"], 55.76)
         self.assertEqual(parsed["lon"], 37.62)
@@ -45,7 +45,7 @@ class ParserTests(unittest.TestCase):
                 "url": "https://example.com/zero.jpg",
             }
         )
-        assert parsed is not None
+        self.assertIsNotNone(parsed)
         self.assertEqual(parsed["lat"], 0.0)
         self.assertEqual(parsed["lon"], 0.0)
 
