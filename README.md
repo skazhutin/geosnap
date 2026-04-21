@@ -155,3 +155,69 @@ docker compose down -v
 2. Создайте/измените правило для default branch (`main`).
 3. Включите `Require status checks to pass before merging`.
 4. Выберите check `CI / test-and-smoke`.
+
+## Этап 2: Ingestion данных (Mapillary + KartaView)
+
+Ниже — минимальная инструкция, как запустить ingestion по Москве и получить единый `manifest.parquet`.
+
+### 1) Подготовить окружение
+
+```bash
+python -m pip install -r apps/backend/requirements.txt
+python -m pip install requests pillow pandas pyarrow
+```
+
+Для Mapillary задайте токен:
+
+```bash
+export MAPILLARY_ACCESS_TOKEN=YOUR_TOKEN
+```
+
+### 2) Загрузить metadata по тайлам Москвы
+
+Mapillary (только metadata + URL):
+
+```bash
+python -m ml.ingestion.mapillary_loader --output-json data/raw/mapillary_raw.json --request-pause-sec 0.25 --request-retries 5 --backoff-sec 1.5
+```
+
+KartaView (только metadata + URL):
+
+```bash
+python -m ml.ingestion.kartaview_loader --output-json data/raw/kartaview_raw.json --request-pause-sec 0.25 --request-retries 5 --backoff-sec 1.5
+```
+
+> Загрузчики не скачивают изображения: они сохраняют только metadata + `image_url`.
+
+### 3) Объединить источники в единый manifest
+
+```bash
+python -m ml.ingestion.merge_sources --mapillary-json data/raw/mapillary_raw.json --kartaview-json data/raw/kartaview_raw.json --output-manifest data/raw/manifest.parquet --dedup-radius-m 7 --max-per-cluster 2
+```
+
+`merge_sources` добавляет в manifest поле `download_url` и выполняет spatial deduplication между источниками (по умолчанию радиус 7 м, максимум 2 фото на кластер).
+
+### 4) Скачать изображения из manifest
+
+```bash
+python -m ml.ingestion.download_images --manifest data/raw/manifest.parquet --errors-log data/raw/download_errors.log --retries 3
+```
+
+### 5) Проверить качество датасета
+
+```bash
+python -m ml.ingestion.validate_dataset --manifest data/raw/manifest.parquet --report data/raw/validation_report.json
+```
+
+### 6) Sanity preview (20 случайных изображений)
+
+```bash
+python -m ml.ingestion.preview --manifest data/raw/manifest.parquet --count 20 --output-image data/raw/preview.jpg
+```
+
+В результате вы получаете:
+
+- изображения в `data/raw/images/mapillary/` и `data/raw/images/kartaview/`;
+- единый `data/raw/manifest.parquet`;
+- отчёт качества `data/raw/validation_report.json`;
+- визуальный превью-лист `data/raw/preview.jpg`.
