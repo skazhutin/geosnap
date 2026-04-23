@@ -81,9 +81,9 @@ class MapillaryLoaderTests(unittest.TestCase):
 
     def test_run_rejects_invalid_limits(self) -> None:
         output = Path("/tmp/mapillary_invalid.json")
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "limit_per_tile must be >= 1"):
             run(output, limit_per_tile=0, request_pause_sec=0.1, request_retries=1, backoff_sec=0.1, max_pages_per_tile=1)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "request_pause_sec must be >= 0"):
             run(
                 output,
                 limit_per_tile=1,
@@ -92,7 +92,7 @@ class MapillaryLoaderTests(unittest.TestCase):
                 backoff_sec=0.1,
                 max_pages_per_tile=1,
             )
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "max_pages_per_tile must be >= 1"):
             run(output, limit_per_tile=1, request_pause_sec=0.1, request_retries=1, backoff_sec=0.1, max_pages_per_tile=0)
 
 
