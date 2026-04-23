@@ -67,6 +67,11 @@ def download_file(
                         for chunk in response.iter_content(chunk_size=8192):
                             if chunk:
                                 fp.write(chunk)
+                if tmp_path.stat().st_size < min_valid_size_bytes:
+                    raise ValueError(
+                        f"downloaded file smaller than minimum valid size: "
+                        f"{tmp_path.stat().st_size} < {min_valid_size_bytes}"
+                    )
                 os.replace(tmp_path, destination)
                 return True
             except Exception as exc:  # noqa: BLE001
