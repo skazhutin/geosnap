@@ -30,7 +30,7 @@ def run(input_manifest: Path, output_manifest: Path) -> None:
     if "heading" not in df.columns:
         df["heading"] = None
     if "metadata_json" not in df.columns:
-        df["metadata_json"] = "{}"
+        df["metadata_json"] = [{} for _ in range(len(df))]
 
     missing = [c for c in FINAL_COLUMNS if c not in df.columns]
     if missing:

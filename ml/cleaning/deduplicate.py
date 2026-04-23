@@ -55,33 +55,50 @@ def hash_distance(left: Any, right: Any) -> int:
     return int((left_int ^ right_int).bit_count())
 
 
-def _cluster_geo(df: pd.DataFrame, dedup_radius_m: float) -> list[list[int]]:
-    n = len(df)
-    neighbors: list[list[int]] = [[] for _ in range(n)]
-    for i in range(n):
-        for j in range(i + 1, n):
-            dist = haversine_distance_m(float(df.loc[i, "lat"]), float(df.loc[i, "lon"]), float(df.loc[j, "lat"]), float(df.loc[j, "lon"]))
-            if dist <= dedup_radius_m:
-                neighbors[i].append(j)
-                neighbors[j].append(i)
+def _bucket_key(lat: float, lon: float, radius_m: float) -> tuple[int, int]:
+    # Approximate metric grid in degrees.
+    lat_step = radius_m / 111_320.0
+    lon_step = radius_m / (111_320.0 * max(math.cos(math.radians(lat)), 0.2))
+    return (int(lat / max(lat_step, 1e-9)), int(lon / max(lon_step, 1e-9)))
 
-    visited = [False] * n
-    clusters: list[list[int]] = []
-    for i in range(n):
-        if visited[i]:
-            continue
-        stack = [i]
-        visited[i] = True
-        component: list[int] = []
-        while stack:
-            cur = stack.pop()
-            component.append(cur)
-            for nxt in neighbors[cur]:
-                if not visited[nxt]:
-                    visited[nxt] = True
-                    stack.append(nxt)
-        clusters.append(component)
-    return clusters
+
+def _cluster_geo(df: pd.DataFrame, dedup_radius_m: float) -> list[list[int]]:
+    """Greedy local clusters (center-based), avoids transitive chain collapse."""
+    clusters: list[dict[str, Any]] = []
+    bucket_to_clusters: dict[tuple[int, int], list[int]] = {}
+
+    sorted_idx = sorted(df.index, key=lambda i: float(df.loc[i, "quality_score"]), reverse=True)
+    for idx in sorted_idx:
+        lat = float(df.loc[idx, "lat"])
+        lon = float(df.loc[idx, "lon"])
+        bucket = _bucket_key(lat, lon, dedup_radius_m)
+
+        candidate_cluster_ids: set[int] = set()
+        for d_lat in (-1, 0, 1):
+            for d_lon in (-1, 0, 1):
+                candidate_cluster_ids.update(bucket_to_clusters.get((bucket[0] + d_lat, bucket[1] + d_lon), []))
+
+        best_cluster: int | None = None
+        best_dist = float("inf")
+        for cluster_id in candidate_cluster_ids:
+            center_lat = float(clusters[cluster_id]["center_lat"])
+            center_lon = float(clusters[cluster_id]["center_lon"])
+            dist = haversine_distance_m(lat, lon, center_lat, center_lon)
+            if dist <= dedup_radius_m and dist < best_dist:
+                best_dist = dist
+                best_cluster = cluster_id
+
+        if best_cluster is None:
+            cluster_id = len(clusters)
+            clusters.append({"indices": [idx], "center_lat": lat, "center_lon": lon})
+            bucket_to_clusters.setdefault(bucket, []).append(cluster_id)
+        else:
+            clusters[best_cluster]["indices"].append(idx)
+            members = clusters[best_cluster]["indices"]
+            clusters[best_cluster]["center_lat"] = float(df.loc[members, "lat"].astype(float).mean())
+            clusters[best_cluster]["center_lon"] = float(df.loc[members, "lon"].astype(float).mean())
+
+    return [cluster["indices"] for cluster in clusters]
 
 
 def _cluster_keep_indices(df: pd.DataFrame, cluster: list[int], max_per_geo_point: int, heading_threshold: float) -> list[int]:
@@ -116,6 +133,9 @@ def run(
     heading_threshold_deg: float,
     pipeline_report_path: Path,
 ) -> None:
+    if max_per_geo_point < 1:
+        raise ValueError("max_per_geo_point must be >= 1")
+
     df = pd.read_parquet(input_manifest).copy().reset_index(drop=True)
     if "quality_score" not in df.columns:
         df["quality_score"] = 0.0
@@ -125,20 +145,21 @@ def run(
     for cluster in geo_clusters:
         keep_geo.update(_cluster_keep_indices(df, cluster, max_per_geo_point, heading_threshold_deg))
 
-    df_geo = df.loc[sorted(keep_geo)].reset_index(drop=True)
+    df_geo = df.loc[sorted(keep_geo)].copy()
+    df_geo = df_geo.sort_values(by="quality_score", ascending=False).reset_index(drop=True)
 
     kept_hashes: list[Any] = []
-    drop_visual: set[int] = set()
+    keep_visual_indices: list[int] = []
     for idx, row in df_geo.iterrows():
         path = Path(str(row["image_path"]))
         current_hash = compute_visual_hash(path)
-        too_similar = any(hash_distance(current_hash, existing_hash) < hash_distance_threshold for existing_hash in kept_hashes)
+        too_similar = any(hash_distance(current_hash, existing_hash) <= hash_distance_threshold for existing_hash in kept_hashes)
         if too_similar:
-            drop_visual.add(idx)
             continue
         kept_hashes.append(current_hash)
+        keep_visual_indices.append(idx)
 
-    result = df_geo.drop(index=sorted(drop_visual)).reset_index(drop=True)
+    result = df_geo.loc[keep_visual_indices].sort_index().reset_index(drop=True)
 
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
     result.to_parquet(output_manifest, index=False)
@@ -149,7 +170,7 @@ def run(
         "after_geo_rows": int(len(df_geo)),
         "after_visual_rows": int(len(result)),
         "geo_duplicates_removed": int(len(df) - len(df_geo)),
-        "visual_duplicates_removed": int(len(drop_visual)),
+        "visual_duplicates_removed": int(len(df_geo) - len(result)),
         "dedup_radius_m": dedup_radius_m,
         "max_per_geo_point": max_per_geo_point,
         "heading_threshold_deg": heading_threshold_deg,

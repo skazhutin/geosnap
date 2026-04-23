@@ -23,8 +23,10 @@ def to_h3(lat: float, lon: float, resolution: int) -> str:
 def run(input_manifest: Path, output_manifest: Path, coarse_resolution: int, fine_resolution: int) -> None:
     df = pd.read_parquet(input_manifest)
 
-    df["h3_coarse"] = df.apply(lambda r: to_h3(float(r["lat"]), float(r["lon"]), coarse_resolution), axis=1)
-    df["h3_fine"] = df.apply(lambda r: to_h3(float(r["lat"]), float(r["lon"]), fine_resolution), axis=1)
+    latitudes = df["lat"].astype(float)
+    longitudes = df["lon"].astype(float)
+    df["h3_coarse"] = [to_h3(lat, lon, coarse_resolution) for lat, lon in zip(latitudes, longitudes)]
+    df["h3_fine"] = [to_h3(lat, lon, fine_resolution) for lat, lon in zip(latitudes, longitudes)]
 
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output_manifest, index=False)

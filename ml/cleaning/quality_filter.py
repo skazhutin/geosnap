@@ -22,14 +22,15 @@ QUALITY_WEIGHTS = {
 
 def variance_of_laplacian(gray: np.ndarray) -> float:
     """Discrete Laplacian variance without OpenCV dependency."""
-    kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=np.float32)
     padded = np.pad(gray.astype(np.float32), 1, mode="edge")
-    out = np.zeros_like(gray, dtype=np.float32)
-    for y in range(gray.shape[0]):
-        for x in range(gray.shape[1]):
-            patch = padded[y : y + 3, x : x + 3]
-            out[y, x] = float(np.sum(patch * kernel))
-    return float(out.var())
+    lap = (
+        -4.0 * padded[1:-1, 1:-1]
+        + padded[:-2, 1:-1]
+        + padded[2:, 1:-1]
+        + padded[1:-1, :-2]
+        + padded[1:-1, 2:]
+    )
+    return float(lap.var())
 
 
 def image_quality_metrics(path: Path) -> tuple[int, int, float, float]:
@@ -98,7 +99,8 @@ def run(
         row_dict["brightness"] = float(brightness)
         kept_rows.append(row_dict)
 
-    result = pd.DataFrame(kept_rows)
+    result_columns = list(dict.fromkeys([*df.columns, "quality_score", "blur_score", "brightness"]))
+    result = pd.DataFrame(kept_rows, columns=result_columns)
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
     result.to_parquet(output_manifest, index=False)
 
