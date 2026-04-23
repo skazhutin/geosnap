@@ -69,6 +69,8 @@ def deduplicate_spatial(
     max_per_cluster: int = 2,
 ) -> list[dict[str, Any]]:
     """Deduplicate cross-source near-identical points by small-radius clustering."""
+    if max_per_cluster < 1:
+        raise ValueError("max_per_cluster must be >= 1")
     if radius_m <= 0:
         return rows
 
