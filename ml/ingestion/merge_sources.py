@@ -13,6 +13,7 @@ from ml.ingestion.common import read_json
 
 
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+RECORD_ID_NAMESPACE = uuid.UUID("58e0f6ca-e665-4fb6-8427-8e9205467f52")
 
 
 def safe_filename(value: str) -> str:
@@ -32,7 +33,8 @@ def normalize_record(source: str, row: dict[str, Any]) -> dict[str, Any] | None:
 
     source_l = source.lower()
     attribution = "Mapillary" if source_l == "mapillary" else "KartaView"
-    record_id = str(uuid.uuid4())
+    stable_key = f"{source_l}:{source_image_id}"
+    record_id = str(uuid.uuid5(RECORD_ID_NAMESPACE, stable_key))
     safe_source_image_id = safe_filename(str(source_image_id))
 
     return {

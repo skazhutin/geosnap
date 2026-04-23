@@ -13,6 +13,26 @@ class MergeSourcesTests(unittest.TestCase):
         self.assertEqual(row["download_url"], "https://x/y.jpg")
         self.assertTrue(row["image_path"].startswith("data/raw/images/mapillary/"))
 
+    def test_normalize_record_is_deterministic_for_source_and_id(self) -> None:
+        row_a = normalize_record(
+            "mapillary",
+            {"id": "m1", "lat": 55.75, "lon": 37.61, "timestamp": "2024-01-01", "image_url": "https://x/y.jpg"},
+        )
+        row_b = normalize_record(
+            "mapillary",
+            {"id": "m1", "lat": 55.75, "lon": 37.61, "timestamp": "2024-01-01", "image_url": "https://x/y.jpg"},
+        )
+        row_other_source = normalize_record(
+            "kartaview",
+            {"id": "m1", "lat": 55.75, "lon": 37.61, "timestamp": "2024-01-01", "image_url": "https://x/y.jpg"},
+        )
+        self.assertIsNotNone(row_a)
+        self.assertIsNotNone(row_b)
+        self.assertIsNotNone(row_other_source)
+        self.assertEqual(row_a["id"], row_b["id"])
+        self.assertEqual(row_a["image_path"], row_b["image_path"])
+        self.assertNotEqual(row_a["id"], row_other_source["id"])
+
     def test_safe_filename_strips_path_chars(self) -> None:
         value = safe_filename("../unsafe\\\\id")
         self.assertNotIn("/", value)
