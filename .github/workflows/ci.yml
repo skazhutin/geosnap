@@ -59,6 +59,10 @@ jobs:
         run: |
           python -m unittest discover -s ml/ingestion/tests -v
 
+      - name: Cleaning unit tests
+        run: |
+          PYTHONPATH=. python -m unittest discover -s ml/cleaning/tests -v
+
       - name: Docker compose smoke check
         run: |
           set -euo pipefail
