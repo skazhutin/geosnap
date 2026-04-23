@@ -135,6 +135,13 @@ def run(
     backoff_sec: float,
     max_pages_per_tile: int,
 ) -> None:
+    if limit_per_tile < 1:
+        raise ValueError("limit_per_tile must be >= 1")
+    if request_pause_sec < 0:
+        raise ValueError("request_pause_sec must be >= 0")
+    if max_pages_per_tile < 1:
+        raise ValueError("max_pages_per_tile must be >= 1")
+
     existing: list[dict[str, Any]] = read_json(output_json, default=[])
     seen_ids = {row.get("id") for row in existing}
 

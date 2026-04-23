@@ -1,7 +1,8 @@
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from ml.ingestion.kartaview_loader import _extract_page, _request_with_retry, fetch_tile
+from ml.ingestion.kartaview_loader import _extract_page, _request_with_retry, fetch_tile, run
 
 
 class FakeResponse:
@@ -62,6 +63,22 @@ class KartaViewLoaderTests(unittest.TestCase):
         session = FakeSession([FakeResponse(200, {})])
         with self.assertRaises(ValueError):
             _request_with_retry(session, url="x", params={}, retries=0, backoff_sec=0.1)
+
+    def test_run_rejects_invalid_limits(self) -> None:
+        output = Path("/tmp/kartaview_invalid.json")
+        with self.assertRaises(ValueError):
+            run(output, limit_per_tile=0, request_pause_sec=0.1, request_retries=1, backoff_sec=0.1, max_pages_per_tile=1)
+        with self.assertRaises(ValueError):
+            run(
+                output,
+                limit_per_tile=1,
+                request_pause_sec=-0.1,
+                request_retries=1,
+                backoff_sec=0.1,
+                max_pages_per_tile=1,
+            )
+        with self.assertRaises(ValueError):
+            run(output, limit_per_tile=1, request_pause_sec=0.1, request_retries=1, backoff_sec=0.1, max_pages_per_tile=0)
 
 
 if __name__ == "__main__":
