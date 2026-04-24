@@ -221,3 +221,21 @@ python -m ml.ingestion.preview --manifest data/raw/manifest.parquet --count 20 -
 - единый `data/raw/manifest.parquet`;
 - отчёт качества `data/raw/validation_report.json`;
 - визуальный превью-лист `data/raw/preview.jpg`.
+
+## Этап 3: Cleaning + H3 + manifest для retrieval
+
+Минимальный прогон пайплайна:
+
+```bash
+python -m ml.cleaning.clean_images --manifest data/raw/manifest.parquet --output data/processed/manifest_step1.parquet
+python -m ml.cleaning.quality_filter --manifest data/processed/manifest_step1.parquet --output data/processed/manifest_step2.parquet --min-width 224 --min-height 224
+python -m ml.cleaning.deduplicate --manifest data/processed/manifest_step2.parquet --output data/processed/manifest_step3.parquet --dedup-radius-m 15 --max-per-geo-point 5
+python -m ml.enrichment.h3_assign --manifest data/processed/manifest_step3.parquet --output data/processed/manifest_step4.parquet --coarse-resolution 6 --fine-resolution 9
+python -m ml.cleaning.build_final_manifest --manifest data/processed/manifest_step4.parquet --output data/processed/manifest_clean.parquet
+python -m ml.cleaning.check_dataset --manifest data/processed/manifest_clean.parquet
+```
+
+Ключевые выходы:
+- `data/processed/manifest_clean.parquet`
+- отчёты в `data/processed/reports/`
+- sanity-визуализации (`dataset_scatter.png`, `dataset_preview_20.jpg`).
