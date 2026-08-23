@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "dataset_id": "moscow-commons-landmarks-proxy-v1",
+  "purpose": "evaluation_only_tiny_landmark_biased_proxy",
+  "source": "Wikimedia Commons",
+  "api_url": "https://commons.wikimedia.org/w/api.php",
+  "snapshot_ledger": "moscow_commons_snapshot_ledger.json",
+  "thumbnail_width_px": 1280,
+  "gallery_images_per_landmark": 3,
+  "query_images_per_landmark": 2,
+  "landmarks": [
+    {
+      "landmark_id": "red_square",
+      "name": "Red Square",
+      "anchor_lat": 55.7539,
+      "anchor_lon": 37.6208,
+      "max_distance_m": 100.0,
+      "page_ids": [36779443, 52812691, 54373950, 56504664, 148230755]
+    },
+    {
+      "landmark_id": "bolshoi_theatre",
+      "name": "Bolshoi Theatre",
+      "anchor_lat": 55.7601,
+      "anchor_lon": 37.6186,
+      "max_distance_m": 100.0,
+      "page_ids": [18969958, 35958166, 43224097, 53081511, 59778897]
+    },
+    {
+      "landmark_id": "cathedral_christ_saviour",
+      "name": "Cathedral of Christ the Saviour",
+      "anchor_lat": 55.7446,
+      "anchor_lon": 37.6055,
+      "max_distance_m": 100.0,
+      "page_ids": [17182906, 42320249, 45609069, 48479285, 69921304]
+    },
+    {
+      "landmark_id": "vdnkh_main_gate",
+      "name": "VDNKh Main Gate",
+      "anchor_lat": 55.8261,
+      "anchor_lon": 37.6377,
+      "max_distance_m": 100.0,
+      "page_ids": [43686698, 63917567, 70090197, 130723942, 177936973]
+    }
+  ]
+}

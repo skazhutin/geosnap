@@ -1,7 +1,40 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.playwright-cli/
 *.pyc
+.DS_Store
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Runtime logs and caches
+*.log
+logs/
+.cache/
+model_cache/
+
+# Downloaded or generated data (small checked-in fixtures stay under tests/)
+data/raw/**
+!data/raw/.gitkeep
+data/processed/**
+!data/processed/.gitkeep
+data/embeddings/**
+data/indexes/**
+data/evaluation/generated/**
+*.faiss
+*.index
+*.npy
+*.npz
+*.parquet
+*.ckpt
+*.pth
+*.pt
+*.safetensors
 
 apps/frontend/node_modules/
 apps/frontend/dist/

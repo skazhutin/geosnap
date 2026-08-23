@@ -1,20 +1,21 @@
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ml.ingestion.kartaview_loader import _extract_page, _request_with_retry, fetch_tile, run
+from ml.ingestion.common import read_json
+from ml.ingestion.kartaview_loader import TileFetchResult, _extract_page, _request_with_retry, fetch_tile, run
 
 
 class FakeResponse:
     def __init__(self, status_code: int, payload):
         self.status_code = status_code
         self._payload = payload
+        self.headers = {}
 
     def raise_for_status(self) -> None:
-        if self.status_code >= 400 and self.status_code not in {429, 500, 502, 503, 504}:
+        if self.status_code >= 400:
             raise RuntimeError(f"http {self.status_code}")
-        if self.status_code in {429, 500, 502, 503, 504}:
-            raise RuntimeError(f"retryable {self.status_code}")
 
     def json(self):
         return self._payload
@@ -34,51 +35,120 @@ class FakeSession:
 
 
 class KartaViewLoaderTests(unittest.TestCase):
-    def test_extract_page_from_result_payload(self) -> None:
-        data, has_more = _extract_page({"result": {"data": [{"id": 1}], "currentPage": 1, "totalPages": 2}})
+    def test_extract_page_current_has_more_data(self) -> None:
+        data, has_more = _extract_page({"result": {"data": [{"id": 1}], "hasMoreData": True}}, page_size=150)
         self.assertEqual(len(data), 1)
         self.assertTrue(has_more)
 
-    def test_fetch_tile_iterates_multiple_pages(self) -> None:
+    def test_extract_page_rejects_logical_api_error(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Restricted"):
+            _extract_page({"status": {"httpCode": 400, "apiMessage": "Restricted access!"}})
+
+    def test_fetch_tile_uses_current_location_parameters_and_paginates(self) -> None:
         session = FakeSession(
             [
-                FakeResponse(200, {"result": {"data": [{"id": "a"}], "hasMore": True}}),
-                FakeResponse(200, {"result": {"data": [{"id": "b"}], "hasMore": False}}),
+                FakeResponse(200, {"result": {"data": [{"id": "a"}], "hasMoreData": True}}),
+                FakeResponse(200, {"result": {"data": [{"id": "b"}], "hasMoreData": False}}),
             ]
         )
-        with patch("ml.ingestion.kartaview_loader.time.sleep"):
-            items = fetch_tile(
-                session,
-                bbox=(37.3, 55.5, 37.31, 55.51),
-                limit=100,
-                retries=3,
-                backoff_sec=0.01,
-                max_pages=10,
-            )
-        self.assertEqual([x["id"] for x in items], ["a", "b"])
-        self.assertEqual(session.calls[0][1]["page"], 1)
-        self.assertEqual(session.calls[1][1]["page"], 2)
+        items = fetch_tile(
+            session,
+            limit=100,
+            retries=3,
+            backoff_sec=0,
+            max_pages=10,
+            lat=55.75,
+            lon=37.61,
+            radius_m=500,
+        )
+        self.assertEqual([item["id"] for item in items], ["a", "b"])
+        params = session.calls[0][1]
+        self.assertEqual(params["itemsPerPage"], 100)
+        self.assertEqual(params["lat"], 55.75)
+        self.assertEqual(params["lng"], 37.61)
+        self.assertEqual(params["radius"], 500)
+        self.assertNotIn("bbox", params)
+        self.assertNotIn("ipp", params)
 
     def test_request_with_retry_rejects_zero_retries(self) -> None:
-        session = FakeSession([FakeResponse(200, {})])
         with self.assertRaises(ValueError):
-            _request_with_retry(session, url="x", params={}, retries=0, backoff_sec=0.1)
+            _request_with_retry(FakeSession([]), url="x", params={}, retries=0, backoff_sec=0.1)
 
     def test_run_rejects_invalid_limits(self) -> None:
         output = Path("/tmp/kartaview_invalid.json")
-        with self.assertRaisesRegex(ValueError, "limit_per_tile must be >= 1"):
-            run(output, limit_per_tile=0, request_pause_sec=0.1, request_retries=1, backoff_sec=0.1, max_pages_per_tile=1)
-        with self.assertRaisesRegex(ValueError, "request_pause_sec must be >= 0"):
-            run(
-                output,
-                limit_per_tile=1,
-                request_pause_sec=-0.1,
-                request_retries=1,
-                backoff_sec=0.1,
-                max_pages_per_tile=1,
-            )
-        with self.assertRaisesRegex(ValueError, "max_pages_per_tile must be >= 1"):
-            run(output, limit_per_tile=1, request_pause_sec=0.1, request_retries=1, backoff_sec=0.1, max_pages_per_tile=0)
+        with self.assertRaisesRegex(ValueError, "between 1 and 150"):
+            run(output, 0, 0.1, 1, 0.1, 1)
+        with self.assertRaisesRegex(ValueError, "request_pause_sec"):
+            run(output, 1, -0.1, 1, 0.1, 1)
+        with self.assertRaisesRegex(ValueError, "request_retries"):
+            run(output, 1, 0, 0, 0.1, 1)
+        with self.assertRaisesRegex(ValueError, "max_pages_per_tile"):
+            run(output, 1, 0.1, 1, 0.1, 0)
+
+    def test_checkpoint_skips_completed_tile(self) -> None:
+        item = {
+            "id": "k1",
+            "lat": 55.555,
+            "lng": 37.305,
+            "shotDate": "2024-01-01 10:00:00",
+            "heading": 90,
+            "sequenceId": "seq-k",
+            "sequenceIndex": 1,
+            "fileurlProc": "https://images.test/k1.jpg",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "raw.json"
+            with patch("ml.ingestion.kartaview_loader.fetch_tile", return_value=TileFetchResult([item], 1, False)):
+                first = run(output, 10, 0, 1, 0, 1, max_tiles=1)
+            self.assertEqual(first["metadata_normalized"], 1)
+            with patch("ml.ingestion.kartaview_loader.fetch_tile") as mocked:
+                second = run(output, 10, 0, 1, 0, 1, max_tiles=1)
+            mocked.assert_not_called()
+            self.assertEqual(second["tiles_skipped_checkpoint"], 1)
+
+    def test_truncated_tile_remains_resumable(self) -> None:
+        item = {
+            "id": "k1",
+            "lat": 55.555,
+            "lng": 37.305,
+            "fileurlProc": "https://images.test/k1.jpg",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "raw.json"
+            with patch(
+                "ml.ingestion.kartaview_loader.fetch_tile",
+                return_value=TileFetchResult([item], 1, True),
+            ):
+                first = run(output, 10, 0, 1, 0, 1, max_tiles=1)
+            self.assertEqual(first["tiles_incomplete"], 1)
+            checkpoint = read_json(output.with_suffix(".checkpoint.json"), default={})
+            self.assertEqual(checkpoint["completed_tiles"], [])
+            self.assertTrue(checkpoint["failed_tiles"])
+
+            with patch(
+                "ml.ingestion.kartaview_loader.fetch_tile",
+                return_value=TileFetchResult([item], 1, False),
+            ) as mocked:
+                second = run(output, 10, 0, 1, 0, 2, max_tiles=1)
+            mocked.assert_called_once()
+            self.assertEqual(second["tiles_succeeded"], 1)
+
+    def test_checkpoint_rejects_changed_acquisition_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "raw.json"
+            with patch(
+                "ml.ingestion.kartaview_loader.fetch_tile",
+                return_value=TileFetchResult([], 1, False),
+            ):
+                run(output, 10, 0, 1, 0, 1, max_tiles=1)
+            with self.assertRaisesRegex(ValueError, "acquisition configuration changed"):
+                run(output, 10, 0, 1, 0, 1, max_tiles=2)
+
+    def test_all_live_failures_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("ml.ingestion.kartaview_loader.fetch_tile", side_effect=RuntimeError("offline")):
+                with self.assertRaisesRegex(RuntimeError, "all 1 live KartaView"):
+                    run(Path(tmp) / "raw.json", 10, 0, 1, 0, 1, max_tiles=1)
 
 
 if __name__ == "__main__":

@@ -1,14 +1,19 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV UV_LINK_MODE=copy
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN python -m pip install --no-cache-dir uv==0.11.19 \
+    && uv sync --locked --no-dev --no-install-project
 
-COPY . .
+ENV PATH="/app/.venv/bin:${PATH}"
+
+COPY apps/backend/app ./app
+COPY ml ./ml
 
 EXPOSE 8000
 

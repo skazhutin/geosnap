@@ -5,18 +5,25 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build"
+    "build": "tsc -b && vite build",
+    "test": "vitest run"
   },
   "dependencies": {
+    "maplibre-gl": "^6.3.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^22.10.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.2",
+    "@vitejs/plugin-react": "^4.7.0",
+    "jsdom": "^25.0.1",
     "typescript": "^5.6.2",
-    "vite": "^5.4.10"
+    "vite": "^6.4.3",
+    "vitest": "^3.2.6"
   }
 }

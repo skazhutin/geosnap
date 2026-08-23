@@ -3,35 +3,75 @@ services:
     image: postgis/postgis:15-3.3
     container_name: geo-db
     restart: unless-stopped
+    profiles: ["database"]
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-geosnap}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ./infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-geosnap}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   backend:
-    build: ./apps/backend
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
     container_name: geo-backend
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
-    env_file:
-      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@db:5432/geosnap}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173}
+      DATA_ROOT: ${DATA_ROOT:-data}
+      GEOSNAP_MODEL_CACHE: ${GEOSNAP_MODEL_CACHE:-.cache/torch/hub}
+      HF_HOME: ${HF_HOME:-.cache/huggingface}
+      GEOSNAP_LOCALIZATION_FACTORY: ${GEOSNAP_LOCALIZATION_FACTORY:-ml.localization.service:create_localization_service}
+      RETRIEVER: ${RETRIEVER:-megaloc}
+      TORCH_DEVICE: ${TORCH_DEVICE:-auto}
+      CITY_ID: ${CITY_ID:-moscow}
+      INDEX_ID: ${INDEX_ID:-moscow}
+      GEOSNAP_INDEX_DIR: ${GEOSNAP_INDEX_DIR:-data/indexes/moscow/megaloc}
+      FAISS_PROCESS_ISOLATION: ${FAISS_PROCESS_ISOLATION:-auto}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-8}
+      RETRIEVAL_TOP_K: ${RETRIEVAL_TOP_K:-20}
+      VERIFICATION_ENABLED: ${VERIFICATION_ENABLED:-false}
+      VERIFICATION_BACKEND: ${VERIFICATION_BACKEND:-opencv_sift}
+      VERIFY_TOP_K: ${VERIFY_TOP_K:-10}
+      VERIFICATION_GEOMETRIC_WEIGHT: ${VERIFICATION_GEOMETRIC_WEIGHT:-0.35}
+      CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.55}
+      OOC_SIMILARITY_THRESHOLD: ${OOC_SIMILARITY_THRESHOLD:-0.15}
+      CONFIDENT_SIMILARITY_THRESHOLD: ${CONFIDENT_SIMILARITY_THRESHOLD:-0.65}
+      MINIMUM_CLUSTER_MASS: ${MINIMUM_CLUSTER_MASS:-0.45}
+      MINIMUM_CLUSTER_MASS_MARGIN: ${MINIMUM_CLUSTER_MASS_MARGIN:-0.10}
+      MINIMUM_CLUSTER_CANDIDATES: ${MINIMUM_CLUSTER_CANDIDATES:-2}
+      GOOD_GEOGRAPHIC_MARGIN: ${GOOD_GEOGRAPHIC_MARGIN:-0.08}
+      GOOD_HYPOTHESIS_SEPARATION_M: ${GOOD_HYPOTHESIS_SEPARATION_M:-500}
+      LOCALIZATION_CLUSTER_RADIUS_M: ${LOCALIZATION_CLUSTER_RADIUS_M:-100}
+      LOCALIZATION_MAX_CLUSTER_DIAMETER_M: ${LOCALIZATION_MAX_CLUSTER_DIAMETER_M:-150}
+      COORDINATE_ESTIMATOR: ${COORDINATE_ESTIMATOR:-weighted_medoid}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-15728640}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-40000000}
+      MAX_IMAGE_DIMENSION: ${MAX_IMAGE_DIMENSION:-12000}
+      MULTIPART_OVERHEAD_BYTES: ${MULTIPART_OVERHEAD_BYTES:-262144}
+      LOCALIZATION_CONCURRENCY: ${LOCALIZATION_CONCURRENCY:-2}
+      READINESS_CHECK_DATABASE: ${READINESS_CHECK_DATABASE:-false}
+    volumes:
+      - ./data:/app/data
+      - ./.cache:/app/.cache
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   frontend:
-    build: ./apps/frontend
+    build:
+      context: ./apps/frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
     container_name: geo-frontend
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:80"
