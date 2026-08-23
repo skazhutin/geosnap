@@ -265,7 +265,7 @@ frontend:
 
 smoke:
 	PYTHONPATH=.:apps/backend GEOSNAP_MODEL_CACHE="$(GEOSNAP_MODEL_CACHE)" \
-		$(PYTHON) infra/scripts/smoke_localize.py --index-dir "$(INDEX_DIR)"
+		$(PYTHON) infra/scripts/smoke_localize.py --index-dir "$(INDEX_DIR)" $(SMOKE_EXTRA_ARGS)
 
 compose-config:
 	docker compose --env-file /dev/null config --quiet

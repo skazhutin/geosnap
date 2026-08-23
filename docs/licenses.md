@@ -31,8 +31,9 @@ official [`mapillary/api-demo`](https://github.com/mapillary/api-demo/blob/main/
 linked to the concrete image. GeoSnap never attempts to remove upstream privacy
 blurring or re-identify people. If a displayed image is materially cropped,
 recolored, or otherwise adapted, the UI/release must identify the modification
-and retain CC BY-SA 4.0 for that adapted image. The current thumbnail proxy only
-serves the validated local reference bytes without an image transformation.
+and retain CC BY-SA 4.0 for that adapted image. The current thumbnail proxy
+technically resizes and re-encodes the validated local reference as JPEG; the UI
+therefore labels every displayed proxy image as `Миниатюра уменьшена GeoSnap`.
 
 ## Models and checkpoints
 

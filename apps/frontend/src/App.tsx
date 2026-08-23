@@ -119,6 +119,9 @@ function MatchCard({ match, rank }: { match: ReferenceMatch; rank: number }) {
           {formatCoordinate(match.lat)}, {formatCoordinate(match.lon)}
         </p>
         <small>{match.attribution}</small>
+        {thumbnail && !thumbnailFailed && (
+          <small className="image-change-note">Миниатюра уменьшена GeoSnap.</small>
+        )}
         <div className="attribution-links">
           <a href={match.source_url} target="_blank" rel="noreferrer">
             Снимок
@@ -339,7 +342,7 @@ function App() {
           </p>
           <div className="method-note">
             <span aria-hidden="true">01</span>
-            <p>Покрытие сейчас ограничено Москвой. При слабых совпадениях сервис честно вернёт неопределённый результат.</p>
+            <p>Галерея частично покрывает отдельные зоны Москвы. При слабых совпадениях сервис честно вернёт неопределённый результат.</p>
           </div>
         </section>
 

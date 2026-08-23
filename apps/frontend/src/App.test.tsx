@@ -119,6 +119,7 @@ describe("GeoSnap frontend", () => {
       "href",
       "https://www.mapillary.com/app/?pKey=ref-1",
     );
+    expect(screen.getByText("Миниатюра уменьшена GeoSnap.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Автор" })).toHaveAttribute(
       "href",
       "https://www.mapillary.com/app/user/contributor",
