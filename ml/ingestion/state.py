@@ -206,6 +206,13 @@ class IngestionState:
 
     def save(self, *, compact: bool = False) -> None:
         self.stats["final_records"] = len(self.records)
+        self.stats["tiles_completed_current"] = len(self.completed_tiles)
+        self.stats["tiles_failed_current"] = len(self.failed_tiles)
+        accounted_tiles = self.completed_tiles | set(self.failed_tiles)
+        self.stats["tiles_outstanding_current"] = max(
+            0,
+            int(self.stats.get("tiles_total", 0)) - len(accounted_tiles),
+        )
         # The append-only journal keeps checkpoint writes proportional to newly
         # discovered rows. A final compaction writes the consumer-facing array
         # once; crash-time duplicates are removed by stable IDs on reload.

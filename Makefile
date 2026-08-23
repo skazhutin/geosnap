@@ -26,6 +26,7 @@ EVAL_MODEL ?= $(RETRIEVER)
 EVAL_STEM := $(subst -,_,$(EVAL_MODEL))_with_robustness
 EVAL_TOP_K ?= 10
 EVAL_ESTIMATOR ?= weighted_medoid
+EMBED_MANIFEST ?= $(FINAL_MANIFEST)
 MOSCOW_QUERY_POINTS_CONFIG ?= configs/moscow_kartaview_areas_v1.json
 KARTAVIEW_MIN_REQUEST_INTERVAL_SEC ?= 45
 KARTAVIEW_SEQUENCE_MAX_REQUESTS ?= 48
@@ -33,6 +34,15 @@ KARTAVIEW_MAX_SELECTED_RECORDS ?= 1200
 MOSCOW_MAPILLARY_LIMIT_PER_POINT ?= 25
 MOSCOW_MAPILLARY_RADIUS_M ?= 25
 DOWNLOAD_MAX_BYTES ?= 6291456
+MOSCOW_EVAL_DIR ?= $(DATA_ROOT)/evaluation/moscow_real_v1
+MOSCOW_GALLERY_MANIFEST := $(MOSCOW_EVAL_DIR)/gallery.parquet
+MOSCOW_CALIBRATION_MANIFEST := $(MOSCOW_EVAL_DIR)/calibration_queries.parquet
+MOSCOW_TEST_MANIFEST := $(MOSCOW_EVAL_DIR)/test_queries.parquet
+MOSCOW_QUERY_MANIFEST ?= $(MOSCOW_CALIBRATION_MANIFEST)
+MOSCOW_MAX_QUERIES ?= 1000
+MOSCOW_EVAL_MODEL ?= $(EVAL_MODEL)
+MOSCOW_CONFIDENCE_THRESHOLD ?= 0.55
+MOSCOW_REPORT_STEM ?= $(subst -,_,$(MOSCOW_EVAL_MODEL))_moscow_real_calibration
 
 MAPILLARY_JSON := $(RAW_DIR)/mapillary_raw.json
 KARTAVIEW_JSON := $(RAW_DIR)/kartaview_raw.json
@@ -49,7 +59,9 @@ FINAL_MANIFEST := $(PROCESSED_DIR)/manifest_clean.parquet
 
 .PHONY: setup test ingest-sample ingest-moscow ingest-mapillary ingest-kartaview \
 	plan-kartaview-sequences expand-kartaview-sequences select-kartaview-frames \
-	merge download prepare-data embed build-index eval-data eval api frontend smoke compose-config
+	merge download prepare-data split-moscow benchmark-moscow benchmark-moscow-models \
+	benchmark-moscow-test embed embed-moscow-gallery build-index index-moscow-gallery \
+	eval-data eval api frontend smoke compose-config
 
 setup:
 	$(UV) sync --extra dev
@@ -186,15 +198,48 @@ prepare-data:
 		--ingestion-stats "$(RAW_DIR)/download.stats.json" \
 		--ingestion-stats "$(PROCESSED_DIR)/cleaning_report.json"
 
+split-moscow:
+	$(PYTHON) -m ml.evaluation.moscow_split \
+		--manifest "$(FINAL_MANIFEST)" --output-dir "$(MOSCOW_EVAL_DIR)" \
+		--max-queries "$(MOSCOW_MAX_QUERIES)" --min-query-spacing-m 20 \
+		--positive-distance-m 100 --phash-distance-threshold 4
+
+benchmark-moscow:
+	HF_HOME="$(HF_HOME)" $(PYTHON) -m ml.evaluation.moscow_benchmark \
+		--gallery-manifest "$(MOSCOW_GALLERY_MANIFEST)" \
+		--query-manifest "$(MOSCOW_QUERY_MANIFEST)" \
+		--output-dir "$(MOSCOW_EVAL_DIR)/reports" --model "$(MOSCOW_EVAL_MODEL)" \
+		--device "$(TORCH_DEVICE)" --cache-dir "$(GEOSNAP_MODEL_CACHE)" \
+		--batch-size "$(EMBEDDING_BATCH_SIZE)" --top-k "$(EVAL_TOP_K)" \
+		--estimator "$(EVAL_ESTIMATOR)" --confidence-threshold "$(MOSCOW_CONFIDENCE_THRESHOLD)" \
+		--report-stem "$(MOSCOW_REPORT_STEM)" $(MOSCOW_BENCHMARK_EXTRA_ARGS)
+
+benchmark-moscow-models:
+	$(MAKE) benchmark-moscow MOSCOW_EVAL_MODEL=megaloc \
+		MOSCOW_REPORT_STEM=megaloc_moscow_real_calibration
+	$(MAKE) benchmark-moscow MOSCOW_EVAL_MODEL=dinov2-salad \
+		MOSCOW_REPORT_STEM=dinov2_salad_moscow_real_calibration
+
+benchmark-moscow-test:
+	@test "$(CONFIRM_FINAL_TEST)" = "1" || { echo "Set CONFIRM_FINAL_TEST=1 only after model, estimator, and confidence are frozen on calibration." >&2; exit 2; }
+	$(MAKE) benchmark-moscow MOSCOW_QUERY_MANIFEST="$(MOSCOW_TEST_MANIFEST)" \
+		MOSCOW_REPORT_STEM="$(subst -,_,$(MOSCOW_EVAL_MODEL))_moscow_real_test"
+
 embed:
-	$(PYTHON) -m ml.retrieval.embedding_job --manifest "$(FINAL_MANIFEST)" \
+	$(PYTHON) -m ml.retrieval.embedding_job --manifest "$(EMBED_MANIFEST)" \
 		--output-dir "$(EMBEDDING_DIR)" --retriever "$(RETRIEVER)" \
 		--device "$(TORCH_DEVICE)" --batch-size "$(EMBEDDING_BATCH_SIZE)" \
 		--model-cache "$(GEOSNAP_MODEL_CACHE)" $(EMBED_EXTRA_ARGS)
 
+embed-moscow-gallery:
+	$(MAKE) embed PROFILE=moscow EMBED_MANIFEST="$(MOSCOW_GALLERY_MANIFEST)"
+
 build-index:
 	$(PYTHON) -m ml.indexing.build_index --embeddings "$(EMBEDDING_DIR)" \
 		--output-dir "$(INDEX_DIR)" --index-id "$(PROFILE)" --city-id "$(CITY_ID)"
+
+index-moscow-gallery: embed-moscow-gallery
+	$(MAKE) build-index PROFILE=moscow
 
 eval-data:
 	$(PYTHON) -m ml.evaluation.commons \

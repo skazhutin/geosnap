@@ -67,3 +67,21 @@ def test_resume_preserves_cumulative_stats(tmp_path: Path) -> None:
     assert resumed.stats["metadata_normalized"] == 3
     assert resumed.stats["elapsed_seconds"] == 1.5
     assert resumed.stats["runs_started"] == 2
+
+
+def test_save_reports_current_checkpoint_state_separately_from_cumulative_counters(
+    tmp_path: Path,
+) -> None:
+    state = _load(tmp_path)
+    state.stats["tiles_total"] = 4
+    state.stats["tiles_failed"] = 7
+    state.completed_tiles.update({"tile-1", "tile-2"})
+    state.failed_tiles["tile-3"] = "retryable"
+
+    state.save()
+
+    stats = read_json(state.stats_path, default={})
+    assert stats["tiles_failed"] == 7
+    assert stats["tiles_completed_current"] == 2
+    assert stats["tiles_failed_current"] == 1
+    assert stats["tiles_outstanding_current"] == 1
