@@ -17,6 +17,8 @@ class PipelineOutputTests(unittest.TestCase):
                 "image_url": "https://example.test/img-123.jpg",
                 "sequence_id": "seq-123",
                 "heading": 180,
+                "attribution": "Mapillary image by fixture",
+                "source_url": "https://www.mapillary.com/app/?focus=photo&pKey=img-123",
             },
         )
         self.assertIsNotNone(row)

@@ -35,19 +35,22 @@ def normalize_record(
         return None
 
     source_name = source.strip().lower()
-    defaults = {
-        "mapillary": {
-            "license": "CC BY-SA 4.0",
-            "attribution": "Mapillary",
-            "source_url": f"https://www.mapillary.com/app/?pKey={source_image_id}",
-        },
-        "kartaview": {
-            "license": "CC BY-SA 4.0",
-            "attribution": "© Grab and KartaView Contributors",
-            "source_url": "https://kartaview.org/",
-        },
-    }
-    if source_name not in defaults:
+    if source_name not in {"mapillary", "kartaview"}:
+        return None
+    attribution = row.get("attribution")
+    source_url = row.get("source_url")
+    if not isinstance(attribution, str) or not isinstance(source_url, str):
+        return None
+    if source_name == "mapillary":
+        author = attribution.removeprefix("Mapillary image by ").strip()
+        if not attribution.startswith("Mapillary image by ") or not author:
+            return None
+        if not source_url.startswith("https://www.mapillary.com/app/") or "pKey=" not in source_url:
+            return None
+    elif (
+        attribution != "© Grab and KartaView Contributors"
+        or not source_url.startswith("https://kartaview.org/details/")
+    ):
         return None
     reference_id = row.get("reference_id") or row.get("canonical_id")
     # canonical_record creates the stable UUID before the path is finalized.
@@ -62,9 +65,9 @@ def normalize_record(
         captured_at=row.get("captured_at") or row.get("timestamp"),
         heading=row.get("heading"),
         quality_score=row.get("quality_score"),
-        license_name=row.get("license") or defaults[source_name]["license"],
-        attribution=row.get("attribution") or defaults[source_name]["attribution"],
-        source_url=row.get("source_url") or defaults[source_name]["source_url"],
+        license_name="CC BY-SA 4.0",
+        attribution=attribution,
+        source_url=source_url,
         metadata=row.get("metadata_json", row),
         download_url=download_url,
         reference_id=str(reference_id) if reference_id else None,

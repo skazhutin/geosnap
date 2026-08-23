@@ -22,6 +22,8 @@ class MergeSourcesTests(unittest.TestCase):
             "sequence_id": "seq",
             "heading": 42,
             "metadata_json": {"z": 1, "a": 2},
+            "attribution": "Mapillary image by fixture",
+            "source_url": "https://www.mapillary.com/app/?focus=photo&pKey=m1",
         }
         row_a = normalize_record("mapillary", source)
         row_b = normalize_record("mapillary", source)
@@ -36,8 +38,22 @@ class MergeSourcesTests(unittest.TestCase):
 
     def test_stable_id_differs_by_source(self) -> None:
         record = {"id": "same", "lat": 55.75, "lon": 37.61, "image_url": "https://x/y.jpg"}
-        mapillary = normalize_record("mapillary", record)
-        kartaview = normalize_record("kartaview", record)
+        mapillary = normalize_record(
+            "mapillary",
+            record
+            | {
+                "attribution": "Mapillary image by fixture",
+                "source_url": "https://www.mapillary.com/app/?focus=photo&pKey=same",
+            },
+        )
+        kartaview = normalize_record(
+            "kartaview",
+            record
+            | {
+                "attribution": "© Grab and KartaView Contributors",
+                "source_url": "https://kartaview.org/details/sequence/1/track-info",
+            },
+        )
         assert mapillary is not None and kartaview is not None
         self.assertNotEqual(mapillary["id"], kartaview["id"])
 
@@ -80,7 +96,17 @@ class MergeSourcesTests(unittest.TestCase):
             root = Path(tmp)
             write_json(
                 root / "m.json",
-                [{"id": "m", "lat": 55.75, "lon": 37.61, "timestamp": 1_704_067_200_000, "image_url": "https://x/m"}],
+                [
+                    {
+                        "id": "m",
+                        "lat": 55.75,
+                        "lon": 37.61,
+                        "timestamp": 1_704_067_200_000,
+                        "image_url": "https://x/m",
+                        "attribution": "Mapillary image by fixture",
+                        "source_url": "https://www.mapillary.com/app/?focus=photo&pKey=m",
+                    }
+                ],
             )
             write_json(
                 root / "k.json",
@@ -91,6 +117,8 @@ class MergeSourcesTests(unittest.TestCase):
                         "lon": 37.62,
                         "timestamp": "2024-01-02 00:00:00",
                         "image_url": "https://x/k",
+                        "attribution": "© Grab and KartaView Contributors",
+                        "source_url": "https://kartaview.org/details/sequence/1/track-info",
                     }
                 ],
             )
@@ -101,6 +129,20 @@ class MergeSourcesTests(unittest.TestCase):
             self.assertTrue(all(isinstance(value, str) for value in df["metadata_json"]))
             for value in df["metadata_json"]:
                 json.loads(value)
+
+    def test_incomplete_source_attribution_is_quarantined(self) -> None:
+        base = {"id": "x", "lat": 55.75, "lon": 37.61, "image_url": "https://x/y.jpg"}
+        self.assertIsNone(normalize_record("mapillary", base))
+        self.assertIsNone(
+            normalize_record(
+                "kartaview",
+                base
+                | {
+                    "attribution": "© Grab and KartaView Contributors",
+                    "source_url": "https://kartaview.org/",
+                },
+            )
+        )
 
 
 if __name__ == "__main__":
