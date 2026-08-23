@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ml.ingestion.common import RetryMetrics, request_with_retry, sanitize_error_message
+from ml.ingestion.common import RequestRateLimiter, RetryMetrics, request_with_retry, sanitize_error_message
 from ml.ingestion.grid import iter_moscow_tiles
 from ml.ingestion.parsers import parse_kartaview_item
 from ml.ingestion.state import IngestionState, ingestion_config_fingerprint
@@ -18,6 +19,7 @@ from ml.ingestion.state import IngestionState, ingestion_config_fingerprint
 logger = logging.getLogger(__name__)
 
 KARTAVIEW_API_URL = "https://api.openstreetcam.org/2.0/photo/"
+AREA_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,73 @@ class TileFetchResult:
     items: list[dict[str, Any]]
     pages: int
     truncated: bool
+
+
+def load_query_points_config(path: Path) -> list[tuple[str, float, float, int]]:
+    """Load a deterministic, bounded set of coverage-confirmed query points."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid KartaView query-points config: {path}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise ValueError("KartaView query-points config must use schema_version 1")
+    dataset_id = payload.get("dataset_id")
+    if not isinstance(dataset_id, str) or not AREA_ID_RE.fullmatch(dataset_id):
+        raise ValueError("query-points dataset_id must be a lowercase slug")
+    defaults = payload.get("query_defaults", {})
+    if not isinstance(defaults, dict):
+        raise ValueError("query_defaults must be an object")
+    default_radius = defaults.get("radius_m", 200)
+    try:
+        default_radius = int(default_radius)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("query_defaults.radius_m must be an integer") from exc
+    areas = payload.get("areas")
+    if not isinstance(areas, list) or not areas:
+        raise ValueError("query-points config must contain at least one area")
+
+    query_points: list[tuple[str, float, float, int]] = []
+    seen_area_ids: set[str] = set()
+    seen_coordinates: set[tuple[float, float, int]] = set()
+    for area in areas:
+        if not isinstance(area, dict):
+            raise ValueError("every query-points area must be an object")
+        area_id = area.get("area_id")
+        if not isinstance(area_id, str) or not AREA_ID_RE.fullmatch(area_id):
+            raise ValueError("area_id must be a lowercase slug")
+        if area_id in seen_area_ids:
+            raise ValueError(f"duplicate area_id: {area_id}")
+        seen_area_ids.add(area_id)
+        points = area.get("points")
+        if not isinstance(points, list) or not points:
+            raise ValueError(f"area {area_id!r} must contain at least one point")
+        for index, point in enumerate(points):
+            if not isinstance(point, dict):
+                raise ValueError(f"area {area_id!r} point {index} must be an object")
+            try:
+                lat = float(point["lat"])
+                lon = float(point["lon"])
+                radius_m = int(point.get("radius_m", default_radius))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"invalid point {index} in area {area_id!r}") from exc
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError(f"point {index} in area {area_id!r} is outside world bounds")
+            if not 1 <= radius_m <= 10_000:
+                raise ValueError(f"point {index} in area {area_id!r} radius_m must be in [1, 10000]")
+            coordinate_key = (round(lat, 7), round(lon, 7), radius_m)
+            if coordinate_key in seen_coordinates:
+                raise ValueError(f"duplicate query point in area {area_id!r}")
+            seen_coordinates.add(coordinate_key)
+            query_points.append(
+                (
+                    f"config:{dataset_id}:{area_id}:{index:03d}",
+                    lat,
+                    lon,
+                    radius_m,
+                )
+            )
+    return query_points
 
 
 def _request_with_retry(
@@ -36,6 +105,7 @@ def _request_with_retry(
     backoff_sec: float,
     timeout_sec: float = 30.0,
     metrics: RetryMetrics | None = None,
+    before_request: Any | None = None,
 ) -> Any:
     return request_with_retry(
         session,
@@ -45,6 +115,7 @@ def _request_with_retry(
         backoff_sec=backoff_sec,
         timeout_sec=timeout_sec,
         metrics=metrics,
+        before_request=before_request,
     )
 
 
@@ -94,6 +165,7 @@ def fetch_tile(
     timeout_sec: float = 30.0,
     return_details: bool = False,
     retry_metrics: RetryMetrics | None = None,
+    request_rate_limiter: RequestRateLimiter | None = None,
 ) -> list[dict[str, Any]] | TileFetchResult:
     """Fetch photos around a point; bbox is converted for API compatibility."""
     if not 1 <= limit <= 150:
@@ -111,8 +183,8 @@ def fetch_tile(
         raise ValueError("lat, lon and radius_m are required")
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise ValueError("lat/lon outside world bounds")
-    if radius_m < 1:
-        raise ValueError("radius_m must be >= 1")
+    if not 1 <= radius_m <= 500:
+        raise ValueError("KartaView radius_m must be in [1, 500]")
 
     page = 1
     all_items: list[dict[str, Any]] = []
@@ -125,6 +197,8 @@ def fetch_tile(
             "radius": int(radius_m),
             "page": page,
             "itemsPerPage": limit,
+            "zoomLevel": 18,
+            "join": "sequence",
         }
         response = _request_with_retry(
             session,
@@ -134,6 +208,7 @@ def fetch_tile(
             backoff_sec=backoff_sec,
             timeout_sec=timeout_sec,
             metrics=retry_metrics,
+            before_request=request_rate_limiter.wait if request_rate_limiter is not None else None,
         )
         try:
             payload = response.json()
@@ -177,6 +252,8 @@ def run(
     radius_override_m: int | None = None,
     center_lat: float | None = None,
     center_lon: float | None = None,
+    query_points_config: Path | None = None,
+    minimum_request_interval_sec: float = 45.0,
 ) -> dict[str, Any]:
     if not 1 <= limit_per_tile <= 150:
         raise ValueError("limit_per_tile must be between 1 and 150")
@@ -194,14 +271,22 @@ def run(
         raise ValueError("checkpoint_every_tiles must be >= 1")
     if max_tiles is not None and max_tiles < 1:
         raise ValueError("max_tiles must be >= 1")
-    if radius_override_m is not None and radius_override_m < 1:
-        raise ValueError("radius_override_m must be >= 1")
+    if radius_override_m is not None and not 1 <= radius_override_m <= 500:
+        raise ValueError("KartaView radius_override_m must be in [1, 500]")
+    if minimum_request_interval_sec < 0:
+        raise ValueError("minimum_request_interval_sec must be >= 0")
     if (center_lat is None) != (center_lon is None):
         raise ValueError("center_lat and center_lon must be provided together")
+    if query_points_config is not None and center_lat is not None:
+        raise ValueError("query_points_config cannot be combined with center_lat/center_lon")
     if center_lat is not None and not (-90 <= center_lat <= 90 and -180 <= float(center_lon) <= 180):
         raise ValueError("center_lat/center_lon outside world bounds")
 
-    if center_lat is not None and center_lon is not None:
+    if query_points_config is not None:
+        query_points = load_query_points_config(query_points_config)
+        if max_tiles is not None:
+            query_points = query_points[:max_tiles]
+    elif center_lat is not None and center_lon is not None:
         query_points = [
             (
                 f"point:{center_lat:.7f}:{center_lon:.7f}:{radius_override_m or 100}",
@@ -217,10 +302,17 @@ def run(
         query_points = [
             (tile.key, tile.center[0], tile.center[1], radius_override_m or tile.enclosing_radius_m()) for tile in tiles
         ]
+    invalid_query_radii = [radius_m for _, _, _, radius_m in query_points if not 1 <= radius_m <= 500]
+    if invalid_query_radii:
+        raise ValueError(
+            "generated KartaView queries exceed the official 500 m radius; "
+            "use --query-points-config, --radius-override-m <= 500, or a finer grid"
+        )
     config_fingerprint = ingestion_config_fingerprint(
         {
             "source": "kartaview",
             "endpoint": KARTAVIEW_API_URL,
+            "query_contract": {"zoomLevel": 18, "join": "sequence", "max_radius_m": 500},
             "limit_per_tile": limit_per_tile,
             "queries": [
                 {"key": key, "lat": lat, "lon": lon, "radius_m": radius_m}
@@ -230,6 +322,7 @@ def run(
     )
     started_at = time.monotonic()
     retry_metrics = RetryMetrics()
+    request_rate_limiter = RequestRateLimiter(minimum_request_interval_sec)
     state = IngestionState.load(
         source="kartaview",
         output_json=output_json,
@@ -265,6 +358,7 @@ def run(
                     timeout_sec=timeout_sec,
                     return_details=True,
                     retry_metrics=retry_metrics,
+                    request_rate_limiter=request_rate_limiter,
                 )
                 assert isinstance(details, TileFetchResult)
                 live_successes += 1
@@ -278,7 +372,9 @@ def run(
 
                 for item in details.items:
                     try:
-                        parsed = parse_kartaview_item(item)
+                        item_with_provenance = dict(item)
+                        item_with_provenance["_geosnap_acquisition_query"] = tile_key
+                        parsed = parse_kartaview_item(item_with_provenance)
                     except Exception as exc:  # noqa: BLE001 - isolate corrupt source records
                         logger.warning(
                             "kartaview_record_invalid reason=%s", sanitize_error_message(exc, max_length=160)
@@ -352,6 +448,13 @@ def main() -> None:
     parser.add_argument("--radius-override-m", type=int)
     parser.add_argument("--center-lat", type=float)
     parser.add_argument("--center-lon", type=float)
+    parser.add_argument("--query-points-config", type=Path)
+    parser.add_argument(
+        "--minimum-request-interval-sec",
+        type=float,
+        default=45.0,
+        help="global interval between every KartaView network attempt; 45s stays below the public 100/hour limit",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
@@ -372,6 +475,8 @@ def main() -> None:
         radius_override_m=args.radius_override_m,
         center_lat=args.center_lat,
         center_lon=args.center_lon,
+        query_points_config=args.query_points_config,
+        minimum_request_interval_sec=args.minimum_request_interval_sec,
     )
     print(json.dumps(stats, ensure_ascii=False, sort_keys=True))
 

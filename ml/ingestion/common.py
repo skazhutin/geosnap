@@ -8,8 +8,10 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -125,6 +127,38 @@ class RetryMetrics:
         }
 
 
+class RequestRateLimiter:
+    """Serialize network attempts and enforce one shared minimum interval.
+
+    The limiter is deliberately invoked by ``request_with_retry`` for every
+    attempt, so retries cannot accidentally bypass a public API rate limit.
+    """
+
+    def __init__(
+        self,
+        minimum_interval_sec: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        if minimum_interval_sec < 0:
+            raise ValueError("minimum_interval_sec must be >= 0")
+        self.minimum_interval_sec = float(minimum_interval_sec)
+        self._clock = clock
+        self._sleeper = sleeper
+        self._next_attempt_at = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            now = self._clock()
+            delay = max(0.0, self._next_attempt_at - now)
+            if delay:
+                self._sleeper(delay)
+                now = self._clock()
+            self._next_attempt_at = now + self.minimum_interval_sec
+
+
 def request_with_retry(
     session: Any,
     *,
@@ -135,6 +169,7 @@ def request_with_retry(
     backoff_sec: float = 1.0,
     retry_statuses: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504}),
     metrics: RetryMetrics | None = None,
+    before_request: Callable[[], None] | None = None,
 ) -> Any:
     if retries < 1:
         raise ValueError("retries must be >= 1")
@@ -144,6 +179,8 @@ def request_with_retry(
         raise ValueError("backoff_sec must be >= 0")
 
     for attempt in range(1, retries + 1):
+        if before_request is not None:
+            before_request()
         if metrics is not None:
             metrics.network_attempts += 1
         try:

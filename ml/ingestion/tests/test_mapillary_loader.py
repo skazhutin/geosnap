@@ -36,8 +36,17 @@ class FakeSession:
 
 class MapillaryLoaderTests(unittest.TestCase):
     def test_fields_include_heading_creator_sequence_and_urls(self) -> None:
-        for field in ("computed_compass_angle", "compass_angle", "creator", "sequence", "thumb_original_url"):
+        for field in (
+            "computed_compass_angle",
+            "compass_angle",
+            "creator",
+            "sequence",
+            "thumb_original_url",
+        ):
             self.assertIn(field, MAPILLARY_FIELDS.split(","))
+
+    def test_live_fields_omit_quality_score_that_silently_empties_spatial_results(self) -> None:
+        self.assertNotIn("quality_score", MAPILLARY_FIELDS.split(","))
 
     def test_request_with_retry_eventually_succeeds(self) -> None:
         session = FakeSession([FakeResponse(429, {}), FakeResponse(200, {"data": []})])
@@ -116,6 +125,58 @@ class MapillaryLoaderTests(unittest.TestCase):
                 second = run(output, 10, 0, 1, 0, 1, max_tiles=1)
             mocked.assert_not_called()
             self.assertEqual(second["tiles_skipped_checkpoint"], 1)
+
+    def test_explicit_multi_area_points_become_small_bboxes_with_provenance(self) -> None:
+        item = {
+            "id": "m1",
+            "captured_at": 1_700_000_000_000,
+            "computed_geometry": {"coordinates": [37.61, 55.75]},
+            "thumb_original_url": "https://images.test/m1.jpg",
+            "sequence": "seq-1",
+            "quality_score": 0.8,
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"MAPILLARY_ACCESS_TOKEN": "token"}
+        ):
+            root = Path(tmp)
+            config = root / "areas.json"
+            config.write_text(
+                """{
+  "schema_version": 1,
+  "dataset_id": "moscow_v1",
+  "query_defaults": {"radius_m": 200},
+  "areas": [{"area_id": "center", "points": [{"lat": 55.75, "lon": 37.61}]}]
+}""",
+                encoding="utf-8",
+            )
+            with patch(
+                "ml.ingestion.mapillary_loader.fetch_tile",
+                return_value=TileFetchResult([item], 1, False),
+            ) as mocked:
+                stats = run(
+                    root / "raw.json",
+                    10,
+                    0,
+                    1,
+                    0,
+                    1,
+                    query_points_config=config,
+                    query_radius_override_m=25,
+                )
+            bbox = mocked.call_args.kwargs["bbox"]
+            self.assertLess(bbox[2] - bbox[0], 0.001)
+            self.assertLess(bbox[3] - bbox[1], 0.001)
+            self.assertEqual(stats["metadata_normalized"], 1)
+            saved = read_json(root / "raw.json", default=[])
+            self.assertEqual(saved[0]["quality_score"], 0.8)
+            self.assertIn("config:moscow_v1:center:000", saved[0]["metadata_json"])
+
+    def test_query_radius_override_requires_points_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"MAPILLARY_ACCESS_TOKEN": "token"}
+        ):
+            with self.assertRaisesRegex(ValueError, "requires query_points_config"):
+                run(Path(tmp) / "raw.json", 10, 0, 1, 0, 1, query_radius_override_m=25)
 
     def test_truncated_tile_remains_resumable(self) -> None:
         item = {

@@ -4,7 +4,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ml.ingestion.common import read_json
-from ml.ingestion.kartaview_loader import TileFetchResult, _extract_page, _request_with_retry, fetch_tile, run
+from ml.ingestion.kartaview_loader import (
+    TileFetchResult,
+    _extract_page,
+    _request_with_retry,
+    fetch_tile,
+    load_query_points_config,
+    run,
+)
 
 
 class FakeResponse:
@@ -67,6 +74,8 @@ class KartaViewLoaderTests(unittest.TestCase):
         self.assertEqual(params["lat"], 55.75)
         self.assertEqual(params["lng"], 37.61)
         self.assertEqual(params["radius"], 500)
+        self.assertEqual(params["zoomLevel"], 18)
+        self.assertEqual(params["join"], "sequence")
         self.assertNotIn("bbox", params)
         self.assertNotIn("ipp", params)
 
@@ -84,6 +93,10 @@ class KartaViewLoaderTests(unittest.TestCase):
             run(output, 1, 0, 0, 0.1, 1)
         with self.assertRaisesRegex(ValueError, "max_pages_per_tile"):
             run(output, 1, 0.1, 1, 0.1, 0)
+        with self.assertRaisesRegex(ValueError, "official 500 m radius"):
+            run(output, 1, 0, 1, 0, 1, max_tiles=1)
+        with self.assertRaisesRegex(ValueError, "radius_override_m"):
+            run(output, 1, 0, 1, 0, 1, max_tiles=1, radius_override_m=501)
 
     def test_checkpoint_skips_completed_tile(self) -> None:
         item = {
@@ -99,12 +112,70 @@ class KartaViewLoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "raw.json"
             with patch("ml.ingestion.kartaview_loader.fetch_tile", return_value=TileFetchResult([item], 1, False)):
-                first = run(output, 10, 0, 1, 0, 1, max_tiles=1)
+                first = run(output, 10, 0, 1, 0, 1, max_tiles=1, radius_override_m=500)
             self.assertEqual(first["metadata_normalized"], 1)
             with patch("ml.ingestion.kartaview_loader.fetch_tile") as mocked:
-                second = run(output, 10, 0, 1, 0, 1, max_tiles=1)
+                second = run(output, 10, 0, 1, 0, 1, max_tiles=1, radius_override_m=500)
             mocked.assert_not_called()
             self.assertEqual(second["tiles_skipped_checkpoint"], 1)
+
+    def test_explicit_multi_area_query_points_are_validated_and_used(self) -> None:
+        item = {
+            "id": "k1",
+            "lat": 55.75,
+            "lng": 37.61,
+            "sequenceId": "seq-k",
+            "fileurlProc": "https://images.test/k1.jpg",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "areas.json"
+            config.write_text(
+                """{
+  "schema_version": 1,
+  "dataset_id": "moscow_v1",
+  "query_defaults": {"radius_m": 175},
+  "areas": [
+    {"area_id": "center", "points": [{"lat": 55.75, "lon": 37.61}]},
+    {"area_id": "west", "points": [{"lat": 55.76, "lon": 37.42, "radius_m": 200}]}
+  ]
+}""",
+                encoding="utf-8",
+            )
+            points = load_query_points_config(config)
+            self.assertEqual(
+                points,
+                [
+                    ("config:moscow_v1:center:000", 55.75, 37.61, 175),
+                    ("config:moscow_v1:west:000", 55.76, 37.42, 200),
+                ],
+            )
+            with patch(
+                "ml.ingestion.kartaview_loader.fetch_tile",
+                side_effect=(TileFetchResult([item], 1, False), TileFetchResult([], 1, False)),
+            ) as mocked:
+                stats = run(root / "raw.json", 10, 0, 1, 0, 1, query_points_config=config)
+            self.assertEqual(stats["tiles_total"], 2)
+            self.assertEqual(mocked.call_args_list[0].kwargs["radius_m"], 175)
+            saved = read_json(root / "raw.json", default=[])
+            self.assertIn("config:moscow_v1:center:000", saved[0]["metadata_json"])
+
+    def test_query_points_config_rejects_duplicate_coordinates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "areas.json"
+            config.write_text(
+                """{
+  "schema_version": 1,
+  "dataset_id": "moscow_v1",
+  "areas": [
+    {"area_id": "a", "points": [{"lat": 55.75, "lon": 37.61}]},
+    {"area_id": "b", "points": [{"lat": 55.75, "lon": 37.61}]}
+  ]
+}""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate query point"):
+                load_query_points_config(config)
 
     def test_truncated_tile_remains_resumable(self) -> None:
         item = {
@@ -119,7 +190,7 @@ class KartaViewLoaderTests(unittest.TestCase):
                 "ml.ingestion.kartaview_loader.fetch_tile",
                 return_value=TileFetchResult([item], 1, True),
             ):
-                first = run(output, 10, 0, 1, 0, 1, max_tiles=1)
+                first = run(output, 10, 0, 1, 0, 1, max_tiles=1, radius_override_m=500)
             self.assertEqual(first["tiles_incomplete"], 1)
             checkpoint = read_json(output.with_suffix(".checkpoint.json"), default={})
             self.assertEqual(checkpoint["completed_tiles"], [])
@@ -129,7 +200,7 @@ class KartaViewLoaderTests(unittest.TestCase):
                 "ml.ingestion.kartaview_loader.fetch_tile",
                 return_value=TileFetchResult([item], 1, False),
             ) as mocked:
-                second = run(output, 10, 0, 1, 0, 2, max_tiles=1)
+                second = run(output, 10, 0, 1, 0, 2, max_tiles=1, radius_override_m=500)
             mocked.assert_called_once()
             self.assertEqual(second["tiles_succeeded"], 1)
 
@@ -140,15 +211,24 @@ class KartaViewLoaderTests(unittest.TestCase):
                 "ml.ingestion.kartaview_loader.fetch_tile",
                 return_value=TileFetchResult([], 1, False),
             ):
-                run(output, 10, 0, 1, 0, 1, max_tiles=1)
+                run(output, 10, 0, 1, 0, 1, max_tiles=1, radius_override_m=500)
             with self.assertRaisesRegex(ValueError, "acquisition configuration changed"):
-                run(output, 10, 0, 1, 0, 1, max_tiles=2)
+                run(output, 10, 0, 1, 0, 1, max_tiles=2, radius_override_m=500)
 
     def test_all_live_failures_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch("ml.ingestion.kartaview_loader.fetch_tile", side_effect=RuntimeError("offline")):
                 with self.assertRaisesRegex(RuntimeError, "all 1 live KartaView"):
-                    run(Path(tmp) / "raw.json", 10, 0, 1, 0, 1, max_tiles=1)
+                    run(
+                        Path(tmp) / "raw.json",
+                        10,
+                        0,
+                        1,
+                        0,
+                        1,
+                        max_tiles=1,
+                        radius_override_m=500,
+                    )
 
 
 if __name__ == "__main__":

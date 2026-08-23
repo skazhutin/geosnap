@@ -26,13 +26,29 @@ EVAL_MODEL ?= $(RETRIEVER)
 EVAL_STEM := $(subst -,_,$(EVAL_MODEL))_with_robustness
 EVAL_TOP_K ?= 10
 EVAL_ESTIMATOR ?= weighted_medoid
+MOSCOW_QUERY_POINTS_CONFIG ?= configs/moscow_kartaview_areas_v1.json
+KARTAVIEW_MIN_REQUEST_INTERVAL_SEC ?= 45
+KARTAVIEW_SEQUENCE_MAX_REQUESTS ?= 48
+KARTAVIEW_MAX_SELECTED_RECORDS ?= 1200
+MOSCOW_MAPILLARY_LIMIT_PER_POINT ?= 25
+MOSCOW_MAPILLARY_RADIUS_M ?= 25
+DOWNLOAD_MAX_BYTES ?= 6291456
 
 MAPILLARY_JSON := $(RAW_DIR)/mapillary_raw.json
 KARTAVIEW_JSON := $(RAW_DIR)/kartaview_raw.json
+KARTAVIEW_SEQUENCE_JSON := $(RAW_DIR)/kartaview_sequences_raw.json
+KARTAVIEW_SEQUENCE_PLAN_JSON := $(RAW_DIR)/kartaview_sequences.plan.json
+KARTAVIEW_SEQUENCE_PLAN_STATS := $(RAW_DIR)/kartaview_sequences.plan.stats.json
+KARTAVIEW_SEQUENCE_CHECKPOINT := $(RAW_DIR)/kartaview_sequences.checkpoint.json
+KARTAVIEW_SEQUENCE_STATS := $(RAW_DIR)/kartaview_sequences.stats.json
+KARTAVIEW_SELECTED_JSON := $(RAW_DIR)/kartaview_selected.json
+KARTAVIEW_SELECTION_REPORT := $(RAW_DIR)/kartaview_selection.report.json
+KARTAVIEW_MERGE_JSON = $(if $(filter moscow,$(PROFILE)),$(KARTAVIEW_SELECTED_JSON),$(KARTAVIEW_JSON))
 RAW_MANIFEST := $(RAW_DIR)/manifest.parquet
 FINAL_MANIFEST := $(PROCESSED_DIR)/manifest_clean.parquet
 
 .PHONY: setup test ingest-sample ingest-moscow ingest-mapillary ingest-kartaview \
+	plan-kartaview-sequences expand-kartaview-sequences select-kartaview-frames \
 	merge download prepare-data embed build-index eval-data eval api frontend smoke compose-config
 
 setup:
@@ -52,18 +68,23 @@ ingest-sample:
 
 ingest-moscow:
 	@test "$(CONFIRM_LARGE_RUN)" = "1" || { echo "Set CONFIRM_LARGE_RUN=1 after checking disk/RAM; the run is resumable but potentially large." >&2; exit 2; }
-	@set +e; \
-	$(MAKE) ingest-kartaview PROFILE=moscow; kartaview_status=$$?; \
-	mapillary_status=skipped; \
+	$(MAKE) ingest-kartaview PROFILE=moscow \
+		KARTAVIEW_EXTRA_ARGS="--query-points-config $(MOSCOW_QUERY_POINTS_CONFIG) --limit-per-tile 150 --max-pages-per-tile 1"
+	$(MAKE) plan-kartaview-sequences PROFILE=moscow
+	$(MAKE) expand-kartaview-sequences PROFILE=moscow
+	$(MAKE) select-kartaview-frames PROFILE=moscow
+	@mapillary_status=skipped; \
 	if [ -n "$${MAPILLARY_ACCESS_TOKEN:-}" ]; then \
-		$(MAKE) ingest-mapillary PROFILE=moscow; mapillary_status=$$?; \
+		set +e; \
+		$(MAKE) ingest-mapillary PROFILE=moscow \
+			MAPILLARY_EXTRA_ARGS="--query-points-config $(MOSCOW_QUERY_POINTS_CONFIG) --query-radius-override-m $(MOSCOW_MAPILLARY_RADIUS_M) --limit-per-tile $(MOSCOW_MAPILLARY_LIMIT_PER_POINT) --max-pages-per-tile 1"; \
+		mapillary_status=$$?; \
+		set -e; \
 	else \
 		echo "MAPILLARY_ACCESS_TOKEN is unset; continuing with KartaView only." >&2; \
 	fi; \
-	set -e; \
-	if [ "$$kartaview_status" -ne 0 ]; then echo "KartaView ingestion failed; merge will still use any valid source output." >&2; fi; \
 	if [ "$$mapillary_status" != skipped ] && [ "$$mapillary_status" -ne 0 ]; then echo "Mapillary ingestion failed; merge will still use any valid source output." >&2; fi; \
-	echo "source_status kartaview=$$kartaview_status mapillary=$$mapillary_status"
+	echo "source_status kartaview=ready mapillary=$$mapillary_status"
 	$(MAKE) merge PROFILE=moscow
 	$(PYTHON) -c 'import sys; import pyarrow.parquet as pq; rows = pq.ParquetFile(sys.argv[1]).metadata.num_rows; print(f"merged_manifest_rows={rows}"); raise SystemExit(0 if rows > 0 else "No valid source rows were produced; refusing to download an empty Moscow dataset.")' "$(DATA_ROOT)/raw/moscow/manifest.parquet"
 	$(MAKE) download PROFILE=moscow
@@ -84,12 +105,44 @@ ingest-kartaview:
 		--checkpoint "$(RAW_DIR)/kartaview.checkpoint.json" \
 		--stats "$(RAW_DIR)/kartaview.stats.json" \
 		--request-retries 5 --backoff-sec 1.5 --timeout-sec 30 \
-		--checkpoint-every-tiles 1 $(KARTAVIEW_EXTRA_ARGS)
+		--checkpoint-every-tiles 1 \
+		--minimum-request-interval-sec "$(KARTAVIEW_MIN_REQUEST_INTERVAL_SEC)" $(KARTAVIEW_EXTRA_ARGS)
+
+plan-kartaview-sequences:
+	mkdir -p "$(RAW_DIR)"
+	$(PYTHON) -m ml.ingestion.kartaview_sequences \
+		--discovery-json "$(KARTAVIEW_JSON)" \
+		--output-json "$(KARTAVIEW_SEQUENCE_JSON)" \
+		--plan-json "$(KARTAVIEW_SEQUENCE_PLAN_JSON)" \
+		--stats "$(KARTAVIEW_SEQUENCE_PLAN_STATS)" \
+		--max-requests "$(KARTAVIEW_SEQUENCE_MAX_REQUESTS)" \
+		--min-request-interval-sec "$(KARTAVIEW_MIN_REQUEST_INTERVAL_SEC)" \
+		--plan-only $(KARTAVIEW_SEQUENCE_EXTRA_ARGS)
+
+expand-kartaview-sequences:
+	mkdir -p "$(RAW_DIR)"
+	$(PYTHON) -m ml.ingestion.kartaview_sequences \
+		--discovery-json "$(KARTAVIEW_JSON)" \
+		--output-json "$(KARTAVIEW_SEQUENCE_JSON)" \
+		--plan-json "$(KARTAVIEW_SEQUENCE_PLAN_JSON)" \
+		--checkpoint "$(KARTAVIEW_SEQUENCE_CHECKPOINT)" \
+		--stats "$(KARTAVIEW_SEQUENCE_STATS)" \
+		--max-requests "$(KARTAVIEW_SEQUENCE_MAX_REQUESTS)" \
+		--min-request-interval-sec "$(KARTAVIEW_MIN_REQUEST_INTERVAL_SEC)" \
+		--request-retries 5 --backoff-sec 1.5 --timeout-sec 30 $(KARTAVIEW_SEQUENCE_EXTRA_ARGS)
+
+select-kartaview-frames:
+	mkdir -p "$(RAW_DIR)"
+	$(PYTHON) -m ml.ingestion.select_kartaview_frames \
+		--input-json "$(KARTAVIEW_SEQUENCE_JSON)" \
+		--output-json "$(KARTAVIEW_SELECTED_JSON)" \
+		--report "$(KARTAVIEW_SELECTION_REPORT)" \
+		--max-records "$(KARTAVIEW_MAX_SELECTED_RECORDS)" $(KARTAVIEW_SELECTION_EXTRA_ARGS)
 
 merge:
 	$(PYTHON) -m ml.ingestion.merge_sources \
 		--mapillary-json "$(MAPILLARY_JSON)" \
-		--kartaview-json "$(KARTAVIEW_JSON)" \
+		--kartaview-json "$(KARTAVIEW_MERGE_JSON)" \
 		--output-manifest "$(RAW_MANIFEST)" \
 		--image-root "$(RAW_DIR)/images" --city-id "$(CITY_ID)"
 
@@ -97,7 +150,8 @@ download:
 	$(PYTHON) -m ml.ingestion.download_images \
 		--manifest "$(RAW_MANIFEST)" \
 		--errors-log "$(RAW_DIR)/download_errors.json" \
-		--stats "$(RAW_DIR)/download.stats.json" --workers 4 --retries 3
+		--stats "$(RAW_DIR)/download.stats.json" --workers 4 --retries 3 \
+		--max-download-bytes "$(DOWNLOAD_MAX_BYTES)" $(DOWNLOAD_EXTRA_ARGS)
 
 prepare-data:
 	mkdir -p "$(PROCESSED_DIR)" "$(REPORT_DIR)"

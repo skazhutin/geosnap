@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -12,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from ml.ingestion.common import RetryMetrics, request_with_retry, sanitize_error_message
-from ml.ingestion.grid import iter_moscow_tiles
+from ml.ingestion.grid import BBox, iter_moscow_tiles
+from ml.ingestion.kartaview_loader import load_query_points_config
 from ml.ingestion.parsers import parse_mapillary_item
 from ml.ingestion.state import IngestionState, ingestion_config_fingerprint
 
@@ -153,6 +155,8 @@ def run(
     lat_step: float = 0.01,
     lon_step: float = 0.01,
     max_tiles: int | None = None,
+    query_points_config: Path | None = None,
+    query_radius_override_m: float | None = None,
 ) -> dict[str, Any]:
     if not 1 <= limit_per_tile <= 2000:
         raise ValueError("limit_per_tile must be between 1 and 2000")
@@ -170,6 +174,11 @@ def run(
         raise ValueError("checkpoint_every_tiles must be >= 1")
     if max_tiles is not None and max_tiles < 1:
         raise ValueError("max_tiles must be >= 1")
+    if query_radius_override_m is not None:
+        if query_points_config is None:
+            raise ValueError("query_radius_override_m requires query_points_config")
+        if not 1 <= query_radius_override_m <= 500:
+            raise ValueError("query_radius_override_m must be between 1 and 500")
 
     token = os.getenv("MAPILLARY_ACCESS_TOKEN")
     if not token:
@@ -178,9 +187,27 @@ def run(
             "fixture-based ingestion tests remain available without it"
         )
 
-    tiles = list(iter_moscow_tiles(lat_step=lat_step, lon_step=lon_step))
+    if query_points_config is not None:
+        query_tiles: list[tuple[str, BBox]] = []
+        for key, lat, lon, configured_radius_m in load_query_points_config(query_points_config):
+            radius_m = query_radius_override_m or configured_radius_m
+            lat_delta = radius_m / 111_320.0
+            lon_delta = radius_m / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
+            query_tiles.append(
+                (
+                    key,
+                    BBox(
+                        min_lat=lat - lat_delta,
+                        max_lat=lat + lat_delta,
+                        min_lon=lon - lon_delta,
+                        max_lon=lon + lon_delta,
+                    ),
+                )
+            )
+    else:
+        query_tiles = [(tile.key, tile) for tile in iter_moscow_tiles(lat_step=lat_step, lon_step=lon_step)]
     if max_tiles is not None:
-        tiles = tiles[:max_tiles]
+        query_tiles = query_tiles[:max_tiles]
     config_fingerprint = ingestion_config_fingerprint(
         {
             "source": "mapillary",
@@ -189,10 +216,10 @@ def run(
             "limit_per_tile": limit_per_tile,
             "tiles": [
                 {
-                    "key": tile.key,
+                    "key": key,
                     "bbox": [tile.min_lon, tile.min_lat, tile.max_lon, tile.max_lat],
                 }
-                for tile in tiles
+                for key, tile in query_tiles
             ],
         }
     )
@@ -206,7 +233,7 @@ def run(
         config_fingerprint=config_fingerprint,
     )
     seen_ids = state.seen_ids
-    state.stats["tiles_total"] = len(tiles)
+    state.stats["tiles_total"] = len(query_tiles)
 
     import requests
 
@@ -214,8 +241,7 @@ def run(
     live_attempts = 0
     live_successes = 0
     with requests.Session() as session:
-        for tile in tiles:
-            tile_key = tile.key
+        for tile_key, tile in query_tiles:
             if tile_key in state.completed_tiles:
                 state.stats["tiles_skipped_checkpoint"] = int(state.stats["tiles_skipped_checkpoint"]) + 1
                 continue
@@ -246,7 +272,9 @@ def run(
 
                 for item in details.items:
                     try:
-                        parsed = parse_mapillary_item(item)
+                        item_with_provenance = dict(item)
+                        item_with_provenance["_geosnap_acquisition_query"] = tile_key
+                        parsed = parse_mapillary_item(item_with_provenance)
                     except Exception as exc:  # noqa: BLE001 - isolate corrupt source records
                         logger.warning(
                             "mapillary_record_invalid reason=%s", sanitize_error_message(exc, max_length=160)
@@ -317,6 +345,8 @@ def main() -> None:
     parser.add_argument("--lat-step", type=float, default=0.01)
     parser.add_argument("--lon-step", type=float, default=0.01)
     parser.add_argument("--max-tiles", type=int)
+    parser.add_argument("--query-points-config", type=Path)
+    parser.add_argument("--query-radius-override-m", type=float)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
@@ -334,6 +364,8 @@ def main() -> None:
         lat_step=args.lat_step,
         lon_step=args.lon_step,
         max_tiles=args.max_tiles,
+        query_points_config=args.query_points_config,
+        query_radius_override_m=args.query_radius_override_m,
     )
     print(json.dumps(stats, ensure_ascii=False, sort_keys=True))
 

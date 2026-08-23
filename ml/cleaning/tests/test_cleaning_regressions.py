@@ -12,6 +12,7 @@ from ml.cleaning.clean_images import run as clean_run
 from ml.cleaning.deduplicate import _cluster_geo
 from ml.cleaning.deduplicate import run as dedup_run
 from ml.cleaning.quality_filter import run as quality_run
+from ml.cleaning.reporting import update_cleaning_report
 from ml.ingestion.schema import CANONICAL_COLUMNS, canonical_record, manifest_dataframe, read_manifest, write_manifest
 
 
@@ -202,6 +203,17 @@ class CleaningRegressionTests(unittest.TestCase):
                 result, summary = _run_dedup(root, records, threshold=0)
             self.assertEqual(len(result), 2)
             self.assertEqual(summary["visual_comparisons"], 0)
+
+    def test_cleaning_report_aggregates_each_stage_reduction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cleaning.json"
+            update_cleaning_report(path, before_clean=100, after_clean=91)
+            update_cleaning_report(path, after_quality=80)
+            result = update_cleaning_report(path, after_dedup=72)
+            self.assertEqual(result["removed_clean"], 9)
+            self.assertEqual(result["removed_quality"], 11)
+            self.assertEqual(result["removed_dedup"], 8)
+            self.assertTrue(path.with_suffix(".md").is_file())
 
 
 if __name__ == "__main__":

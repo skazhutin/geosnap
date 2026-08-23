@@ -74,7 +74,12 @@ class ExactSearch(Protocol):
     def search_one(self, query: np.ndarray, *, k: int) -> list[RetrievalResult]: ...
 
 
-def _faiss_process(connection: Any) -> None:
+def _faiss_process(
+    connection: Any,
+    index_id: str,
+    city_id: str | None,
+    extra_metadata: Mapping[str, Any],
+) -> None:
     """Own FAISS in a process that never imports PyTorch (important on macOS)."""
 
     try:
@@ -96,12 +101,9 @@ def _faiss_process(connection: Any) -> None:
                         request["reference_ids"],
                         reference_metadata=request["reference_metadata"],
                         retriever_metadata=request["retriever_metadata"],
-                        index_id="moscow-commons-proxy-runtime",
-                        city_id="moscow",
-                        extra_metadata={
-                            "evaluation_only": True,
-                            "dataset_kind": "tiny_landmark_biased_proxy",
-                        },
+                        index_id=index_id,
+                        city_id=city_id,
+                        extra_metadata=extra_metadata,
                     )
                     response: dict[str, Any] = {
                         "kind": "built",
@@ -140,10 +142,29 @@ def _faiss_process(connection: Any) -> None:
 class IsolatedFaissExactSearch(AbstractContextManager["IsolatedFaissExactSearch"]):
     """Runtime-only normalized ``faiss.IndexFlatIP`` behind a spawn boundary."""
 
-    def __init__(self, *, timeout_seconds: float = 120.0) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 120.0,
+        index_id: str = "moscow-commons-proxy-runtime",
+        city_id: str | None = "moscow",
+        extra_metadata: Mapping[str, Any] | None = None,
+    ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if not index_id.strip():
+            raise ValueError("index_id must be non-empty")
         self.timeout_seconds = timeout_seconds
+        self.index_id = index_id
+        self.city_id = city_id
+        self.extra_metadata = dict(
+            extra_metadata
+            if extra_metadata is not None
+            else {
+                "evaluation_only": True,
+                "dataset_kind": "tiny_landmark_biased_proxy",
+            }
+        )
         self._context = mp.get_context("spawn")
         self._connection: Any | None = None
         self._process: Any | None = None
@@ -153,7 +174,7 @@ class IsolatedFaissExactSearch(AbstractContextManager["IsolatedFaissExactSearch"
         parent, child = self._context.Pipe(duplex=True)
         process = self._context.Process(
             target=_faiss_process,
-            args=(child,),
+            args=(child, self.index_id, self.city_id, self.extra_metadata),
             name="geosnap-evaluation-faiss",
             daemon=True,
         )

@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image
 
 from ml.ingestion.common import (
+    RequestRateLimiter,
     download_file,
     download_file_detailed,
     read_json,
@@ -275,6 +276,34 @@ class CommonTests(unittest.TestCase):
                 backoff_sec=0,
             )
         self.assertEqual(session.calls, 1)
+
+    def test_rate_limiter_enforces_interval_without_real_sleep(self) -> None:
+        now = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        limiter = RequestRateLimiter(45.0, clock=lambda: now[0], sleeper=sleep)
+        limiter.wait()
+        now[0] += 10.0
+        limiter.wait()
+        self.assertEqual(sleeps, [35.0])
+
+    def test_retry_throttle_runs_before_every_network_attempt(self) -> None:
+        session = FakeRequestSession(FakeResponse(b"busy", status_code=503))
+        attempts: list[int] = []
+        with self.assertRaisesRegex(RuntimeError, "HTTP 503"):
+            request_with_retry(
+                session,
+                url="https://example.test/busy",
+                retries=2,
+                backoff_sec=0,
+                before_request=lambda: attempts.append(len(attempts) + 1),
+            )
+        self.assertEqual(attempts, [1, 2])
+        self.assertEqual(session.calls, 2)
 
     def test_retry_delay_is_exponential_and_honors_retry_after(self) -> None:
         response = FakeResponse(b"")

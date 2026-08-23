@@ -53,6 +53,7 @@ def parse_mapillary_item(item: dict[str, Any]) -> dict[str, Any] | None:
 
     captured_at = normalize_captured_at(item.get("captured_at"))
     heading = normalize_heading(_first_present(item, ["computed_compass_angle", "compass_angle"]))
+    quality_score = _finite_coordinate(item.get("quality_score"), 0.0, 1.0)
     return {
         # Keep id/timestamp/image_url aliases for backward-compatible raw JSON.
         "id": str(image_id),
@@ -62,6 +63,7 @@ def parse_mapillary_item(item: dict[str, Any]) -> dict[str, Any] | None:
         "timestamp": captured_at,
         "captured_at": captured_at,
         "heading": heading,
+        "quality_score": quality_score,
         "image_url": image_url,
         "download_url": image_url,
         "sequence_id": str(sequence_id) if sequence_id not in (None, "") else None,
