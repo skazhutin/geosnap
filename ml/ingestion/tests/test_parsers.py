@@ -64,6 +64,15 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(parse_kartaview_item({"id": "x", "lat": "bad", "lng": 37.6, "fileurl": "https://x"}))
         self.assertIsNone(parse_kartaview_item({"id": "x", "lat": 55.7, "lng": 37.6}))
 
+    def test_mapillary_without_creator_username_is_quarantined(self) -> None:
+        base = {
+            "id": "123",
+            "geometry": {"coordinates": [37.61, 55.75]},
+            "thumb_1024_url": "https://example.test/123.jpg",
+        }
+        self.assertIsNone(parse_mapillary_item(base))
+        self.assertIsNone(parse_mapillary_item(base | {"creator": {"id": "42"}}))
+
 
 if __name__ == "__main__":
     unittest.main()

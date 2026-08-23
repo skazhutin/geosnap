@@ -35,6 +35,7 @@ MOSCOW_MAPILLARY_LIMIT_PER_POINT ?= 25
 MOSCOW_MAPILLARY_RADIUS_M ?= 25
 DOWNLOAD_MAX_BYTES ?= 6291456
 MOSCOW_EVAL_DIR ?= $(DATA_ROOT)/evaluation/moscow_real_v1
+MOSCOW_FINAL_MANIFEST := $(DATA_ROOT)/processed/moscow/manifest_clean.parquet
 MOSCOW_GALLERY_MANIFEST := $(MOSCOW_EVAL_DIR)/gallery.parquet
 MOSCOW_CALIBRATION_MANIFEST := $(MOSCOW_EVAL_DIR)/calibration_queries.parquet
 MOSCOW_TEST_MANIFEST := $(MOSCOW_EVAL_DIR)/test_queries.parquet
@@ -200,7 +201,7 @@ prepare-data:
 
 split-moscow:
 	$(PYTHON) -m ml.evaluation.moscow_split \
-		--manifest "$(FINAL_MANIFEST)" --output-dir "$(MOSCOW_EVAL_DIR)" \
+		--manifest "$(MOSCOW_FINAL_MANIFEST)" --output-dir "$(MOSCOW_EVAL_DIR)" \
 		--max-queries "$(MOSCOW_MAX_QUERIES)" --min-query-spacing-m 20 \
 		--positive-distance-m 100 --phash-distance-threshold 4
 

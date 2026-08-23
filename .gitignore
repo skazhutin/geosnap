@@ -26,6 +26,7 @@ data/processed/**
 data/embeddings/**
 data/indexes/**
 data/evaluation/generated/**
+data/evaluation/moscow_real_*/**
 *.faiss
 *.index
 *.npy

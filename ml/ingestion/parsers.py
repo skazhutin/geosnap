@@ -42,14 +42,12 @@ def parse_mapillary_item(item: dict[str, Any]) -> dict[str, Any] | None:
     sequence = item.get("sequence")
     sequence_id = sequence.get("id") if isinstance(sequence, dict) else sequence
     creator = item.get("creator")
-    if isinstance(creator, dict):
-        creator_name = creator.get("username") or creator.get("name") or creator.get("id")
-    else:
-        creator_name = creator
-    source_url = f"https://www.mapillary.com/app/?pKey={image_id}"
-    attribution = "Mapillary"
-    if creator_name:
-        attribution = f"Mapillary image by {creator_name}"
+    creator_name = creator.get("username") if isinstance(creator, dict) else None
+    if not isinstance(creator_name, str) or not creator_name.strip():
+        return None
+    creator_name = creator_name.strip()
+    source_url = f"https://www.mapillary.com/app/?focus=photo&pKey={image_id}"
+    attribution = f"Mapillary image by {creator_name}"
 
     captured_at = normalize_captured_at(item.get("captured_at"))
     heading = normalize_heading(_first_present(item, ["computed_compass_angle", "compass_angle"]))

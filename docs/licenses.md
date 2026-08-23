@@ -1,6 +1,6 @@
 # License and attribution audit
 
-Verified: 2026-08-15. This is an engineering inventory, not legal advice. The
+Verified: 2026-08-24. This is an engineering inventory, not legal advice. The
 terms linked below remain authoritative and must be rechecked before a public
 deployment or redistribution of images/model weights.
 
@@ -15,7 +15,7 @@ replace them.
 
 | Source | Current terms used by this project | Required handling |
 | --- | --- | --- |
-| Mapillary imagery | [Mapillary's current help article](https://help.mapillary.com/hc/en-us/articles/115001770409-CC-BY-SA-license-for-open-data) says all images are shared under CC BY-SA and gives the expected per-image attribution form. API and commercial use are also subject to Mapillary's current platform terms. | Preserve image ID, contributor, original image/profile link, license, and attribution in every manifest stage. Display attribution next to any exposed reference image. Keep API credentials outside the repository. Do not bypass API limits or create an uncontrolled bulk downloader. |
+| Mapillary imagery | [Mapillary's current help article](https://help.mapillary.com/hc/en-us/articles/115001770409-CC-BY-SA-license-for-open-data) says public user images are shared under CC BY-SA and gives the expected per-image attribution form. API and commercial use are also subject to the current [Mapillary Terms](https://www.mapillary.com/terms). | Preserve image ID, contributor username, original image/profile links, license, and attribution in every manifest stage. When GeoSnap serves a reference image, show the visible official Mapillary mark linked to that image, the author/profile link, and CC BY-SA 4.0 beside it. Keep the registered application token outside the repository. Do not bypass API limits or create an uncontrolled bulk downloader. |
 | KartaView imagery | [KartaView Terms of Use](https://kartaview.org/terms), last modified 2025-06-17, state that street imagery is CC BY-SA 4.0. | Credit exactly `© Grab and KartaView Contributors`, preserve source/image links and license, and comply with CC BY-SA 4.0 when redistributing or adapting imagery. |
 | Wikimedia Commons evaluation images | License and attribution are file-specific; the acquisition snapshot retains each file page, author, license label/URL and hashes. See the [Commons reuse guidance](https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia). | Evaluation-only. Recheck every linked file page before reuse; do not treat the proxy as a deployable street-view gallery or as city-wide evidence. |
 | OpenStreetMap data | [OpenStreetMap copyright and license](https://www.openstreetmap.org/copyright): ODbL 1.0. | Show `© OpenStreetMap contributors` and link to the copyright page. Derived databases may trigger ODbL share-alike obligations. |
@@ -24,6 +24,15 @@ replace them.
 Mapillary's Object Dataset and other benchmark datasets are **not** covered by
 the street-imagery row above. Each separately packaged dataset must be audited
 before use. No benchmark dataset is automatically a deployable Moscow gallery.
+
+Mapillary rows without `creator.username` are quarantined instead of receiving
+a synthetic generic attribution. The UI uses the green mark from Mapillary's
+official [`mapillary/api-demo`](https://github.com/mapillary/api-demo/blob/main/logo_green.svg),
+linked to the concrete image. GeoSnap never attempts to remove upstream privacy
+blurring or re-identify people. If a displayed image is materially cropped,
+recolored, or otherwise adapted, the UI/release must identify the modification
+and retain CC BY-SA 4.0 for that adapted image. The current thumbnail proxy only
+serves the validated local reference bytes without an image transformation.
 
 ## Models and checkpoints
 
@@ -61,6 +70,7 @@ Every reference row must carry `source`, `source_image_id`, `license`,
 `attribution`, and source-link metadata. The API returns source, license and,
 when available, contributor-profile links for each displayable match; it never
 synthesizes a permissive default when upstream metadata is missing. The
-frontend renders these links adjacent to reference thumbnails and renders map
-attribution on the map itself. Outbound URLs are limited to HTTPS and known
-source/license hosts before reaching the browser contract.
+frontend renders these links adjacent to reference thumbnails, renders the
+official linked Mapillary mark on Mapillary cards, and renders map attribution
+on the map itself. Outbound URLs are limited to HTTPS and known source/license
+hosts before reaching the browser contract.

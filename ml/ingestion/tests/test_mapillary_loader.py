@@ -115,6 +115,7 @@ class MapillaryLoaderTests(unittest.TestCase):
             "thumb_original_url": "https://images.test/m1.jpg",
             "computed_compass_angle": 42,
             "sequence": "seq-1",
+            "creator": {"username": "fixture"},
         }
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MAPILLARY_ACCESS_TOKEN": "token"}):
             output = Path(tmp) / "raw.json"
@@ -134,6 +135,7 @@ class MapillaryLoaderTests(unittest.TestCase):
             "thumb_original_url": "https://images.test/m1.jpg",
             "sequence": "seq-1",
             "quality_score": 0.8,
+            "creator": {"username": "fixture"},
         }
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             "os.environ", {"MAPILLARY_ACCESS_TOKEN": "token"}
@@ -183,6 +185,7 @@ class MapillaryLoaderTests(unittest.TestCase):
             "id": "m1",
             "computed_geometry": {"coordinates": [37.305, 55.555]},
             "thumb_original_url": "https://images.test/m1.jpg",
+            "creator": {"username": "fixture"},
         }
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MAPILLARY_ACCESS_TOKEN": "token"}):
             output = Path(tmp) / "raw.json"

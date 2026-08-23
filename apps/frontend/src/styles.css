@@ -661,9 +661,30 @@ a {
   align-items: baseline;
 }
 
-.match-heading > span:first-child {
+.match-heading > span:first-child,
+.mapillary-brand {
   font-size: 0.72rem;
   font-weight: 800;
+}
+
+.mapillary-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.mapillary-brand:hover span,
+.mapillary-brand:focus-visible span {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.mapillary-brand img {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 
 .score {

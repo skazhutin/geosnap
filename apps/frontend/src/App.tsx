@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { localizeImage, safeThumbnailUrl } from "./api";
+import mapillaryLogo from "./assets/mapillary-logo.svg";
 import type { ApiStatus, LocalizeResponse, ReferenceMatch } from "./types";
 
 const ResultMap = lazy(() =>
@@ -79,6 +80,7 @@ function sourceName(source: string): string {
 function MatchCard({ match, rank }: { match: ReferenceMatch; rank: number }) {
   const thumbnail = safeThumbnailUrl(match.thumbnail_url);
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
+  const isMapillary = match.source.toLowerCase() === "mapillary";
   return (
     <article className="match-card">
       {thumbnail && !thumbnailFailed ? (
@@ -97,7 +99,20 @@ function MatchCard({ match, rank }: { match: ReferenceMatch; rank: number }) {
       )}
       <div className="match-copy">
         <div className="match-heading">
-          <span>{sourceName(match.source)}</span>
+          {isMapillary ? (
+            <a
+              className="mapillary-brand"
+              href={match.source_url}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Открыть снимок в Mapillary"
+            >
+              <img src={mapillaryLogo} alt="" aria-hidden="true" />
+              <span>Mapillary</span>
+            </a>
+          ) : (
+            <span>{sourceName(match.source)}</span>
+          )}
           <span className="score">score {match.retrieval_score.toFixed(3)}</span>
         </div>
         <p>
