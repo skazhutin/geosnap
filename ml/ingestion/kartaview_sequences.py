@@ -274,9 +274,13 @@ def _extract_page(payload: Any) -> list[dict[str, Any]]:
             raise RuntimeError(f"KartaView API error {logical_http}: {message}")
     result = payload.get("result")
     if not isinstance(result, dict):
-        return []
+        raise RuntimeError("KartaView response is missing an object result")
     data = result.get("data")
-    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+    if not isinstance(data, list):
+        raise RuntimeError("KartaView response result is missing a data array")
+    if any(not isinstance(item, dict) for item in data):
+        raise RuntimeError("KartaView response data contains a non-object item")
+    return data
 
 
 def fetch_sequence_page(

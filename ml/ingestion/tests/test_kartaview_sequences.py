@@ -9,6 +9,7 @@ from ml.ingestion.common import RequestRateLimiter, read_json
 from ml.ingestion.kartaview_sequences import (
     DEFAULT_MIN_REQUEST_INTERVAL_SEC,
     SequencePageRequest,
+    _extract_page,
     build_sequence_plan,
     fetch_sequence_page,
     run,
@@ -166,6 +167,25 @@ def test_fetch_page_uses_sequence_parameters_and_throttles_every_retry() -> None
     assert all(call[2] == 12 for call in session.calls)
     assert throttled.closed
     assert successful.closed
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"result": None},
+        {"result": {}},
+        {"result": {"data": None}},
+        {"result": {"data": [None]}},
+    ],
+)
+def test_extract_page_rejects_malformed_success_payloads(payload: object) -> None:
+    with pytest.raises(RuntimeError, match="KartaView response"):
+        _extract_page(payload)
+
+
+def test_extract_page_accepts_an_explicit_empty_data_array() -> None:
+    assert _extract_page({"result": {"data": []}}) == []
 
 
 def test_plan_only_writes_plan_and_stats_without_opening_a_session() -> None:
