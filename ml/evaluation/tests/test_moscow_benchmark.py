@@ -177,6 +177,7 @@ def _write_fixture(tmp_path: Path) -> tuple[Path, Path]:
                 lon=lon,
                 area_id=area_id,
             )
+            | {"evaluation_split": "calibration"}
         )
 
     gallery_path = tmp_path / "gallery.parquet"
@@ -227,6 +228,12 @@ def test_real_manifest_benchmark_reports_metrics_provenance_and_storage(tmp_path
     assert payload["runtime"]["query_descriptor_storage_bytes"] == 4 * 3 * 4
     assert payload["runtime"]["exact_faiss_vector_storage_bytes"] == 10 * 3 * 4
     assert len(payload["per_query"]) == 4
+    assert {row["evaluation_split"] for row in payload["per_query"]} == {"calibration"}
+    assert all(
+        row["query_quality"]["method"] == "shared_production_query_quality_v1"
+        and 0.0 <= row["query_quality"]["confidence_signal"] <= 1.0
+        for row in payload["per_query"]
+    )
     assert json.loads(json_path.read_text(encoding="utf-8"))["robustness"] is None
     markdown = markdown_path.read_text(encoding="utf-8")
     assert "Leakage audit: **PASS**" in markdown

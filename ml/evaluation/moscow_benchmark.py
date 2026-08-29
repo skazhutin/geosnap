@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from ml.evaluation.augmentations import generate_robustness_variants
 from ml.evaluation.commons_benchmark import ExactSearch, IsolatedFaissExactSearch
@@ -45,6 +45,7 @@ from ml.ingestion.schema import (
 )
 from ml.localization import LocalizerConfig, SpatialLocalizer, haversine_m
 from ml.localization.estimators import CoordinateEstimator
+from ml.query_quality import measure_query_image_quality
 from ml.retrieval import BaseRetriever, create_retriever
 from ml.retrieval.base import l2_normalize
 
@@ -562,7 +563,20 @@ def _evaluate_image(
 ) -> tuple[list[RetrievalResult], LocalizationObservation, dict[str, float], dict[str, Any]]:
     end_to_end_started = time.perf_counter()
     started = time.perf_counter()
-    descriptor = retriever.embed_query(query_image)
+    try:
+        if isinstance(query_image, Image.Image):
+            prepared_image = ImageOps.exif_transpose(query_image).convert("RGB")
+        else:
+            with Image.open(query_image) as opened:
+                opened.load()
+                prepared_image = ImageOps.exif_transpose(opened).convert("RGB")
+    except (OSError, SyntaxError, ValueError, UnidentifiedImageError) as exc:
+        raise MoscowBenchmarkError(f"cannot prepare query image {query_id!r}") from exc
+    quality = measure_query_image_quality(prepared_image)
+    query_preprocessing_ms = (time.perf_counter() - started) * 1000.0
+
+    started = time.perf_counter()
+    descriptor = retriever.embed_query(prepared_image)
     descriptor = l2_normalize(descriptor)[0]
     query_embedding_ms = (time.perf_counter() - started) * 1000.0
     if descriptor.shape != (retriever.descriptor_dim,):
@@ -575,7 +589,7 @@ def _evaluate_image(
     exact_faiss_search_ms = (time.perf_counter() - started) * 1000.0
 
     started = time.perf_counter()
-    localized = localizer.localize(matches)
+    localized = localizer.localize(matches, query_quality=quality.confidence_signal)
     spatial_localization_ms = (time.perf_counter() - started) * 1000.0
     end_to_end_ms = (time.perf_counter() - end_to_end_started) * 1000.0
     observation = LocalizationObservation(
@@ -593,6 +607,7 @@ def _evaluate_image(
         else haversine_m(true_lat, true_lon, localized.lat, localized.lon)
     )
     timings = {
+        "query_preprocessing": query_preprocessing_ms,
         "query_embedding": query_embedding_ms,
         "exact_faiss_search": exact_faiss_search_ms,
         "spatial_localization": spatial_localization_ms,
@@ -608,6 +623,13 @@ def _evaluate_image(
         "status": localized.status.value,
         "confidence": localized.confidence,
         "reasons": list(localized.reasons),
+        "query_quality": {
+            "sharpness": quality.sharpness,
+            "brightness": quality.brightness,
+            "exposure": quality.exposure,
+            "confidence_signal": quality.confidence_signal,
+            "method": "shared_production_query_quality_v1",
+        },
         "latency_ms": timings,
         "matches": [
             {
@@ -710,6 +732,7 @@ def _run_robustness(
     observations: list[LocalizationObservation] = []
     per_query: list[dict[str, Any]] = []
     timings: dict[str, list[float]] = {
+        "query_preprocessing": [],
         "query_embedding": [],
         "exact_faiss_search": [],
         "spatial_localization": [],
@@ -1031,6 +1054,7 @@ def run_moscow_benchmark(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     timings: dict[str, list[float]] = {
+        "query_preprocessing": [],
         "query_embedding": [],
         "exact_faiss_search": [],
         "spatial_localization": [],
@@ -1096,6 +1120,7 @@ def run_moscow_benchmark(
                     "area_id": values.get("area_id"),
                     "evaluation_area_h3": values.get("evaluation_area_h3"),
                     "evaluation_sample_h3": values.get("evaluation_sample_h3"),
+                    "evaluation_split": values.get("evaluation_split"),
                     "h3_coarse": values.get("h3_coarse"),
                     "h3_fine": values.get("h3_fine"),
                     "source_url": values.get("source_url"),

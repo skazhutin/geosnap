@@ -67,7 +67,11 @@ FLOAT_COLUMNS = {
 }
 INTEGER_COLUMNS = {"width", "height"}
 
-MOSCOW_BOUNDS = (55.55, 55.95, 37.30, 37.90)
+# Bounding box of the official OSM administrative Moscow relation 102269.
+# Exact final-gallery scope is enforced with the pinned relation polygon; the
+# bbox remains the portable coarse gate used by generic schema utilities.
+MOSCOW_BOUNDS = (55.1421745, 56.0212238, 36.8031012, 37.9674277)
+MOSCOW_LEGACY_CORE_BOUNDS = (55.55, 55.95, 37.30, 37.90)
 
 
 class ManifestSchemaError(ValueError):

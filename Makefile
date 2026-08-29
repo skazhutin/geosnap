@@ -29,10 +29,25 @@ EVAL_ESTIMATOR ?= weighted_medoid
 EMBED_MANIFEST ?= $(FINAL_MANIFEST)
 MOSCOW_QUERY_POINTS_CONFIG ?= configs/moscow_kartaview_areas_v1.json
 KARTAVIEW_MIN_REQUEST_INTERVAL_SEC ?= 45
-KARTAVIEW_SEQUENCE_MAX_REQUESTS ?= 48
-KARTAVIEW_MAX_SELECTED_RECORDS ?= 1200
+KARTAVIEW_SEQUENCE_MAX_REQUESTS ?=
+KARTAVIEW_HOTSPOTS_PER_AREA ?=
+KARTAVIEW_SEQUENCES_PER_HOTSPOT ?=
+KARTAVIEW_SEQUENCE_LIMIT_ARGS = $(if $(strip $(KARTAVIEW_SEQUENCE_MAX_REQUESTS)),--max-requests "$(KARTAVIEW_SEQUENCE_MAX_REQUESTS)") $(if $(strip $(KARTAVIEW_HOTSPOTS_PER_AREA)),--hotspots-per-area "$(KARTAVIEW_HOTSPOTS_PER_AREA)") $(if $(strip $(KARTAVIEW_SEQUENCES_PER_HOTSPOT)),--sequences-per-hotspot "$(KARTAVIEW_SEQUENCES_PER_HOTSPOT)")
+KARTAVIEW_MAX_SELECTED_RECORDS ?=
+KARTAVIEW_MAX_PER_SEQUENCE ?=
+KARTAVIEW_SELECTION_LIMIT_ARGS = $(if $(strip $(KARTAVIEW_MAX_SELECTED_RECORDS)),--max-records "$(KARTAVIEW_MAX_SELECTED_RECORDS)") $(if $(strip $(KARTAVIEW_MAX_PER_SEQUENCE)),--max-per-sequence "$(KARTAVIEW_MAX_PER_SEQUENCE)")
 MOSCOW_MAPILLARY_LIMIT_PER_POINT ?= 25
 MOSCOW_MAPILLARY_RADIUS_M ?= 25
+MAPILLARY_CITYWIDE_ZOOM ?= 12
+MAPILLARY_CITYWIDE_MAX_RECORDS ?= 20000
+MAPILLARY_CITYWIDE_MAX_PER_TILE ?= 600
+MAPILLARY_CITYWIDE_MAX_PER_SUBCELL ?= 60
+MAPILLARY_CITYWIDE_SUBCELLS_PER_AXIS ?= 4
+MAPILLARY_CITYWIDE_CANDIDATE_MULTIPLIER ?= 2
+MAPILLARY_CITYWIDE_METADATA_BATCH_SIZE ?= 50
+MAPILLARY_CITYWIDE_MAX_TILE_BYTES ?= 33554432
+MAPILLARY_CITYWIDE_VECTOR_TILE_CACHE_MAX_AGE_SEC ?= 86400
+MAPILLARY_CITYWIDE_METADATA_CACHE_MAX_AGE_SEC ?= 3600
 DOWNLOAD_MAX_BYTES ?= 6291456
 MOSCOW_EVAL_DIR ?= $(DATA_ROOT)/evaluation/moscow_real_v1
 MOSCOW_FINAL_MANIFEST := $(DATA_ROOT)/processed/moscow/manifest_clean.parquet
@@ -44,8 +59,22 @@ MOSCOW_MAX_QUERIES ?= 1000
 MOSCOW_EVAL_MODEL ?= $(EVAL_MODEL)
 MOSCOW_CONFIDENCE_THRESHOLD ?= 0.55
 MOSCOW_REPORT_STEM ?= $(subst -,_,$(MOSCOW_EVAL_MODEL))_moscow_real_calibration
+MOSCOW_CALIBRATION_BENCHMARK_JSON ?= $(MOSCOW_EVAL_DIR)/reports/$(MOSCOW_REPORT_STEM).json
+MOSCOW_CONFIDENCE_REPORT_STEM ?= $(subst -,_,$(MOSCOW_EVAL_MODEL))_moscow_confidence_calibration
+MOSCOW_VERIFICATION_MAX_QUERIES ?= 100
+MOSCOW_VERIFICATION_BACKEND ?= opencv_sift
+MOSCOW_VERIFY_TOP_K ?= 10
+MOSCOW_VERIFICATION_GEOMETRIC_WEIGHT ?= 0.35
+MOSCOW_VERIFICATION_MIN_SEQUENCES ?= 10
+MOSCOW_VERIFICATION_MIN_AREAS ?= 4
+MOSCOW_VERIFICATION_REPORT_STEM ?= $(subst -,_,$(MOSCOW_EVAL_MODEL))_$(MOSCOW_VERIFICATION_BACKEND)_k$(MOSCOW_VERIFY_TOP_K)_w$(subst .,_,$(MOSCOW_VERIFICATION_GEOMETRIC_WEIGHT))_moscow_verification_ablation
 
 MAPILLARY_JSON := $(RAW_DIR)/mapillary_raw.json
+MAPILLARY_CITYWIDE_JSON := $(RAW_DIR)/mapillary_citywide_raw.json
+MAPILLARY_CITYWIDE_CACHE := $(RAW_DIR)/mapillary_citywide_cache
+MAPILLARY_CITYWIDE_CHECKPOINT := $(RAW_DIR)/mapillary_citywide.checkpoint.json
+MAPILLARY_CITYWIDE_STATS := $(RAW_DIR)/mapillary.stats.json
+MAPILLARY_MERGE_JSON = $(if $(filter moscow,$(PROFILE)),$(MAPILLARY_CITYWIDE_JSON),$(MAPILLARY_JSON))
 KARTAVIEW_JSON := $(RAW_DIR)/kartaview_raw.json
 KARTAVIEW_SEQUENCE_JSON := $(RAW_DIR)/kartaview_sequences_raw.json
 KARTAVIEW_SEQUENCE_PLAN_JSON := $(RAW_DIR)/kartaview_sequences.plan.json
@@ -58,10 +87,11 @@ KARTAVIEW_MERGE_JSON = $(if $(filter moscow,$(PROFILE)),$(KARTAVIEW_SELECTED_JSO
 RAW_MANIFEST := $(RAW_DIR)/manifest.parquet
 FINAL_MANIFEST := $(PROCESSED_DIR)/manifest_clean.parquet
 
-.PHONY: setup test ingest-sample ingest-moscow ingest-mapillary ingest-kartaview \
+.PHONY: setup test ingest-sample ingest-moscow ingest-mapillary ingest-mapillary-citywide ingest-kartaview \
 	plan-kartaview-sequences expand-kartaview-sequences select-kartaview-frames \
 	merge download prepare-data split-moscow benchmark-moscow benchmark-moscow-models \
-	benchmark-moscow-test embed embed-moscow-gallery build-index index-moscow-gallery \
+	calibrate-moscow-confidence benchmark-moscow-verification benchmark-moscow-test \
+	embed embed-moscow-gallery build-index index-moscow-gallery \
 	eval-data eval api frontend smoke compose-config
 
 setup:
@@ -82,23 +112,20 @@ ingest-sample:
 ingest-moscow:
 	@test "$(CONFIRM_LARGE_RUN)" = "1" || { echo "Set CONFIRM_LARGE_RUN=1 after checking disk/RAM; the run is resumable but potentially large." >&2; exit 2; }
 	$(MAKE) ingest-kartaview PROFILE=moscow \
-		KARTAVIEW_EXTRA_ARGS="--query-points-config $(MOSCOW_QUERY_POINTS_CONFIG) --limit-per-tile 150 --max-pages-per-tile 1"
+		KARTAVIEW_EXTRA_ARGS="--query-points-config $(MOSCOW_QUERY_POINTS_CONFIG) --limit-per-tile 150"
 	$(MAKE) plan-kartaview-sequences PROFILE=moscow
 	$(MAKE) expand-kartaview-sequences PROFILE=moscow
 	$(MAKE) select-kartaview-frames PROFILE=moscow
-	@mapillary_status=skipped; \
+	@mapillary_json="$(RAW_DIR)/.mapillary-unavailable.$$$$.json"; \
 	if [ -n "$${MAPILLARY_ACCESS_TOKEN:-}" ]; then \
-		set +e; \
-		$(MAKE) ingest-mapillary PROFILE=moscow \
-			MAPILLARY_EXTRA_ARGS="--query-points-config $(MOSCOW_QUERY_POINTS_CONFIG) --query-radius-override-m $(MOSCOW_MAPILLARY_RADIUS_M) --limit-per-tile $(MOSCOW_MAPILLARY_LIMIT_PER_POINT) --max-pages-per-tile 1"; \
-		mapillary_status=$$?; \
-		set -e; \
+		$(MAKE) ingest-mapillary-citywide PROFILE=moscow; \
+		mapillary_json="$(MAPILLARY_CITYWIDE_JSON)"; \
+		echo "source_status kartaview=ready mapillary=ready"; \
 	else \
 		echo "MAPILLARY_ACCESS_TOKEN is unset; continuing with KartaView only." >&2; \
+		echo "source_status kartaview=ready mapillary=skipped"; \
 	fi; \
-	if [ "$$mapillary_status" != skipped ] && [ "$$mapillary_status" -ne 0 ]; then echo "Mapillary ingestion failed; merge will still use any valid source output." >&2; fi; \
-	echo "source_status kartaview=ready mapillary=$$mapillary_status"
-	$(MAKE) merge PROFILE=moscow
+	$(MAKE) merge PROFILE=moscow MAPILLARY_MERGE_JSON="$$mapillary_json"
 	$(PYTHON) -c 'import sys; import pyarrow.parquet as pq; rows = pq.ParquetFile(sys.argv[1]).metadata.num_rows; print(f"merged_manifest_rows={rows}"); raise SystemExit(0 if rows > 0 else "No valid source rows were produced; refusing to download an empty Moscow dataset.")' "$(DATA_ROOT)/raw/moscow/manifest.parquet"
 	$(MAKE) download PROFILE=moscow
 
@@ -110,6 +137,26 @@ ingest-mapillary:
 		--stats "$(RAW_DIR)/mapillary.stats.json" \
 		--request-retries 5 --backoff-sec 1.5 --timeout-sec 30 \
 		--checkpoint-every-tiles 1 $(MAPILLARY_EXTRA_ARGS)
+
+ingest-mapillary-citywide:
+	mkdir -p "$(RAW_DIR)"
+	$(PYTHON) -m ml.ingestion.mapillary_citywide \
+		--output-json "$(MAPILLARY_CITYWIDE_JSON)" \
+		--cache-dir "$(MAPILLARY_CITYWIDE_CACHE)" \
+		--checkpoint "$(MAPILLARY_CITYWIDE_CHECKPOINT)" \
+		--stats "$(MAPILLARY_CITYWIDE_STATS)" \
+		--zoom "$(MAPILLARY_CITYWIDE_ZOOM)" \
+		--max-records "$(MAPILLARY_CITYWIDE_MAX_RECORDS)" \
+		--max-per-tile "$(MAPILLARY_CITYWIDE_MAX_PER_TILE)" \
+		--max-per-subcell "$(MAPILLARY_CITYWIDE_MAX_PER_SUBCELL)" \
+		--subcells-per-axis "$(MAPILLARY_CITYWIDE_SUBCELLS_PER_AXIS)" \
+		--candidate-multiplier "$(MAPILLARY_CITYWIDE_CANDIDATE_MULTIPLIER)" \
+		--metadata-batch-size "$(MAPILLARY_CITYWIDE_METADATA_BATCH_SIZE)" \
+		--max-tile-bytes "$(MAPILLARY_CITYWIDE_MAX_TILE_BYTES)" \
+		--vector-tile-cache-max-age-sec "$(MAPILLARY_CITYWIDE_VECTOR_TILE_CACHE_MAX_AGE_SEC)" \
+		--metadata-cache-max-age-sec "$(MAPILLARY_CITYWIDE_METADATA_CACHE_MAX_AGE_SEC)" \
+		--request-retries 5 --backoff-sec 1.5 --timeout-sec 30 \
+		--request-interval-sec 0.10 $(MAPILLARY_CITYWIDE_EXTRA_ARGS)
 
 ingest-kartaview:
 	mkdir -p "$(RAW_DIR)"
@@ -127,8 +174,7 @@ plan-kartaview-sequences:
 		--discovery-json "$(KARTAVIEW_JSON)" \
 		--output-json "$(KARTAVIEW_SEQUENCE_JSON)" \
 		--plan-json "$(KARTAVIEW_SEQUENCE_PLAN_JSON)" \
-		--stats "$(KARTAVIEW_SEQUENCE_PLAN_STATS)" \
-		--max-requests "$(KARTAVIEW_SEQUENCE_MAX_REQUESTS)" \
+		--stats "$(KARTAVIEW_SEQUENCE_PLAN_STATS)" $(KARTAVIEW_SEQUENCE_LIMIT_ARGS) \
 		--min-request-interval-sec "$(KARTAVIEW_MIN_REQUEST_INTERVAL_SEC)" \
 		--plan-only $(KARTAVIEW_SEQUENCE_EXTRA_ARGS)
 
@@ -139,8 +185,7 @@ expand-kartaview-sequences:
 		--output-json "$(KARTAVIEW_SEQUENCE_JSON)" \
 		--plan-json "$(KARTAVIEW_SEQUENCE_PLAN_JSON)" \
 		--checkpoint "$(KARTAVIEW_SEQUENCE_CHECKPOINT)" \
-		--stats "$(KARTAVIEW_SEQUENCE_STATS)" \
-		--max-requests "$(KARTAVIEW_SEQUENCE_MAX_REQUESTS)" \
+		--stats "$(KARTAVIEW_SEQUENCE_STATS)" $(KARTAVIEW_SEQUENCE_LIMIT_ARGS) \
 		--min-request-interval-sec "$(KARTAVIEW_MIN_REQUEST_INTERVAL_SEC)" \
 		--request-retries 5 --backoff-sec 1.5 --timeout-sec 30 $(KARTAVIEW_SEQUENCE_EXTRA_ARGS)
 
@@ -149,12 +194,11 @@ select-kartaview-frames:
 	$(PYTHON) -m ml.ingestion.select_kartaview_frames \
 		--input-json "$(KARTAVIEW_SEQUENCE_JSON)" \
 		--output-json "$(KARTAVIEW_SELECTED_JSON)" \
-		--report "$(KARTAVIEW_SELECTION_REPORT)" \
-		--max-records "$(KARTAVIEW_MAX_SELECTED_RECORDS)" $(KARTAVIEW_SELECTION_EXTRA_ARGS)
+		--report "$(KARTAVIEW_SELECTION_REPORT)" $(KARTAVIEW_SELECTION_LIMIT_ARGS) $(KARTAVIEW_SELECTION_EXTRA_ARGS)
 
 merge:
 	$(PYTHON) -m ml.ingestion.merge_sources \
-		--mapillary-json "$(MAPILLARY_JSON)" \
+		--mapillary-json "$(MAPILLARY_MERGE_JSON)" \
 		--kartaview-json "$(KARTAVIEW_MERGE_JSON)" \
 		--output-manifest "$(RAW_MANIFEST)" \
 		--image-root "$(RAW_DIR)/images" --city-id "$(CITY_ID)"
@@ -220,6 +264,28 @@ benchmark-moscow-models:
 		MOSCOW_REPORT_STEM=megaloc_moscow_real_calibration
 	$(MAKE) benchmark-moscow MOSCOW_EVAL_MODEL=dinov2-salad \
 		MOSCOW_REPORT_STEM=dinov2_salad_moscow_real_calibration
+
+calibrate-moscow-confidence:
+	$(PYTHON) -m ml.evaluation.calibrate_confidence \
+		--benchmark-json "$(MOSCOW_CALIBRATION_BENCHMARK_JSON)" \
+		--output-dir "$(MOSCOW_EVAL_DIR)/reports" \
+		--report-stem "$(MOSCOW_CONFIDENCE_REPORT_STEM)"
+
+benchmark-moscow-verification:
+	HF_HOME="$(HF_HOME)" $(PYTHON) -m ml.evaluation.moscow_verification_ablation \
+		--gallery-manifest "$(MOSCOW_GALLERY_MANIFEST)" \
+		--query-manifest "$(MOSCOW_CALIBRATION_MANIFEST)" \
+		--output-dir "$(MOSCOW_EVAL_DIR)/reports" --model "$(MOSCOW_EVAL_MODEL)" \
+		--device "$(TORCH_DEVICE)" --cache-dir "$(GEOSNAP_MODEL_CACHE)" \
+		--batch-size "$(EMBEDDING_BATCH_SIZE)" --top-k "$(EVAL_TOP_K)" \
+		--max-queries "$(MOSCOW_VERIFICATION_MAX_QUERIES)" \
+		--estimator "$(EVAL_ESTIMATOR)" --confidence-threshold "$(MOSCOW_CONFIDENCE_THRESHOLD)" \
+		--verification-backend "$(MOSCOW_VERIFICATION_BACKEND)" \
+		--verify-top-k "$(MOSCOW_VERIFY_TOP_K)" \
+		--geometric-weight "$(MOSCOW_VERIFICATION_GEOMETRIC_WEIGHT)" \
+		--minimum-sequences-for-enablement "$(MOSCOW_VERIFICATION_MIN_SEQUENCES)" \
+		--minimum-areas-for-enablement "$(MOSCOW_VERIFICATION_MIN_AREAS)" \
+		--report-stem "$(MOSCOW_VERIFICATION_REPORT_STEM)"
 
 benchmark-moscow-test:
 	@test "$(CONFIRM_FINAL_TEST)" = "1" || { echo "Set CONFIRM_FINAL_TEST=1 only after model, estimator, and confidence are frozen on calibration." >&2; exit 2; }

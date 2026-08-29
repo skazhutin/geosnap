@@ -79,7 +79,10 @@ def parse_kartaview_item(item: dict[str, Any]) -> dict[str, Any] | None:
     if image_id is None or lat is None or lon is None:
         return None
 
-    image_url = _first_present(item, ["fileurlProc", "imageProcUrl", "fileurl", "imageLthUrl", "fileurlLTh", "url"])
+    # Prefer KartaView's public CDN proxy over the backing storage host. Older
+    # storage*.openstreetcam.org origins can be temporarily unavailable while
+    # the CDN URL returned by the same API record remains healthy.
+    image_url = _first_present(item, ["imageProcUrl", "imageLthUrl", "fileurlProc", "fileurlLTh", "fileurl", "url"])
     if not isinstance(image_url, str) or not image_url.startswith(("https://", "http://")):
         return None
     captured_at = normalize_captured_at(_first_present(item, ["shotDate", "dateAdded", "timestamp"]))

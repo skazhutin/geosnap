@@ -98,10 +98,12 @@ class GeometricReranker:
         self.config = config or VerificationConfig()
         self._verifier = verifier
 
-    def _retrieval_unit_score(self, value: float) -> float:
+    def _verification_raw_score(self, value: float) -> float:
+        """Map geometric evidence to the configured raw retrieval-score domain."""
+
         low = self.config.retrieval_score_min
         high = self.config.retrieval_score_max
-        return max(0.0, min(1.0, (value - low) / (high - low)))
+        return low + max(0.0, min(1.0, value)) * (high - low)
 
     @staticmethod
     def _validate_candidates(candidates: Sequence[VerificationCandidate]) -> None:
@@ -123,7 +125,7 @@ class GeometricReranker:
             retrieval_score=candidate.retrieval_score,
             original_rank=candidate.original_rank,
             final_rank=final_rank,
-            rerank_score=self._retrieval_unit_score(candidate.retrieval_score),
+            rerank_score=candidate.retrieval_score,
             verification_score=None,
             evidence=None,
             metadata=candidate.metadata,
@@ -173,10 +175,12 @@ class GeometricReranker:
 
         weighted: list[tuple[float, VerificationCandidate, GeometricEvidence]] = []
         for candidate, pair_evidence in zip(head, evidence, strict=True):
-            retrieval_score = self._retrieval_unit_score(candidate.retrieval_score)
+            verification_score = self._verification_raw_score(
+                pair_evidence.normalized_score
+            )
             combined = (
-                (1.0 - self.config.geometric_weight) * retrieval_score
-                + self.config.geometric_weight * pair_evidence.normalized_score
+                (1.0 - self.config.geometric_weight) * candidate.retrieval_score
+                + self.config.geometric_weight * verification_score
             )
             weighted.append((combined, candidate, pair_evidence))
         weighted.sort(key=lambda item: (-item[0], item[1].original_rank))

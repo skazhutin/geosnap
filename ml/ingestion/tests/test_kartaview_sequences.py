@@ -110,9 +110,19 @@ def test_plan_is_deterministic_bounded_and_uses_strongest_hotspots() -> None:
         discovery_record("d1", area="beta", hotspot=0, sequence_id="seq-9", normalized=True),
     ]
 
-    plan, summary = build_sequence_plan(records, items_per_page=150, max_requests=5)
+    plan, summary = build_sequence_plan(
+        records,
+        items_per_page=150,
+        hotspots_per_area=2,
+        sequences_per_hotspot=3,
+        max_requests=5,
+    )
     reverse_plan, reverse_summary = build_sequence_plan(
-        list(reversed(records)), items_per_page=150, max_requests=5
+        list(reversed(records)),
+        items_per_page=150,
+        hotspots_per_area=2,
+        sequences_per_hotspot=3,
+        max_requests=5,
     )
 
     assert [request.as_dict() for request in plan] == [
@@ -129,6 +139,28 @@ def test_plan_is_deterministic_bounded_and_uses_strongest_hotspots() -> None:
     representative = next(request for request in plan if request.sequence_id == "seq-1")
     assert representative.representative_sequence_index == 299
     assert representative.page == 2
+
+
+def test_default_plan_retains_every_discovered_hotspot_and_sequence() -> None:
+    records = [
+        discovery_record("a1", area="alpha", hotspot=0, sequence_id="seq-1"),
+        discovery_record("a2", area="alpha", hotspot=0, sequence_id="seq-2"),
+        discovery_record("b1", area="alpha", hotspot=1, sequence_id="seq-3"),
+        discovery_record("c1", area="alpha", hotspot=2, sequence_id="seq-4"),
+        discovery_record("d1", area="beta", hotspot=0, sequence_id="seq-5"),
+    ]
+
+    plan, summary = build_sequence_plan(records)
+
+    assert {request.sequence_id for request in plan} == {
+        "seq-1",
+        "seq-2",
+        "seq-3",
+        "seq-4",
+        "seq-5",
+    }
+    assert summary.hotspots_discovered == summary.hotspots_planned == 4
+    assert summary.requests_before_global_limit == summary.requests_planned == 5
 
 
 def test_fetch_page_uses_sequence_parameters_and_throttles_every_retry() -> None:
@@ -280,15 +312,62 @@ def test_run_deduplicates_photo_ids_filters_aoi_preserves_provenance_and_resumes
         assert read_json(output, default=[]) == saved
 
 
+def test_plan_expansion_reuses_completed_request_checkpoint() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        discovery = root / "discovery.json"
+        output = root / "expanded.json"
+        discovery.write_text(
+            json.dumps(
+                [
+                    discovery_record("seed-a", area="alpha", hotspot=0, sequence_id="seq-a"),
+                    discovery_record("seed-b", area="alpha", hotspot=0, sequence_id="seq-b"),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        first_session = FakeSession([response_with(api_photo("photo-a", sequence_id="seq-a"))])
+        first = run(
+            discovery,
+            output,
+            sequences_per_hotspot=1,
+            min_request_interval_sec=0,
+            request_retries=1,
+            backoff_sec=0,
+            session=first_session,
+        )
+        first_checkpoint = read_json(output.with_suffix(".checkpoint.json"), default={})
+
+        second_session = FakeSession([response_with(api_photo("photo-b", sequence_id="seq-b"))])
+        second = run(
+            discovery,
+            output,
+            min_request_interval_sec=0,
+            request_retries=1,
+            backoff_sec=0,
+            session=second_session,
+        )
+        second_checkpoint = read_json(output.with_suffix(".checkpoint.json"), default={})
+
+        assert first["requests_planned"] == 1
+        assert second["requests_planned"] == 2
+        assert second["checkpoint_plan_expanded"] is True
+        assert len(second_session.calls) == 1
+        assert second_session.calls[0][1]["sequenceId"] == "seq-b"
+        assert [row["id"] for row in read_json(output, default=[])] == ["photo-a", "photo-b"]
+        assert first_checkpoint["config_fingerprint"] != second_checkpoint["config_fingerprint"]
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
         ({"items_per_page": 151}, "items_per_page"),
-        ({"hotspots_per_area": 3}, "hotspots_per_area"),
-        ({"sequences_per_hotspot": 4}, "sequences_per_hotspot"),
+        ({"hotspots_per_area": 0}, "hotspots_per_area"),
+        ({"sequences_per_hotspot": 0}, "sequences_per_hotspot"),
         ({"max_requests": 0}, "max_requests"),
     ],
 )
-def test_plan_rejects_unbounded_limits(kwargs: dict[str, int], message: str) -> None:
+def test_plan_rejects_invalid_explicit_limits(kwargs: dict[str, int], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         build_sequence_plan([], **kwargs)

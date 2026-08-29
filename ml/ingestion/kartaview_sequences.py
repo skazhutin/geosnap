@@ -1,9 +1,11 @@
-"""Bounded, restart-safe expansion of KartaView discovery hits by sequence.
+"""Restart-safe expansion of KartaView discovery hits by sequence.
 
 The point-discovery loader typically returns one representative photo from many
 sequences around each query point.  This module turns those sparse hits into a
-small, deterministic request plan and fetches one page around each representative
-``sequenceIndex``.  It deliberately does not perform discovery itself.
+deterministic finite request plan and fetches one page around each representative
+``sequenceIndex``.  Optional limits are explicit; the defaults retain every
+discovered hotspot/sequence candidate.  It deliberately does not perform
+discovery itself.
 """
 
 from __future__ import annotations
@@ -34,9 +36,9 @@ logger = logging.getLogger(__name__)
 
 KARTAVIEW_API_URL = "https://api.openstreetcam.org/2.0/photo/"
 PLAN_SCHEMA_VERSION = 1
-DEFAULT_HOTSPOTS_PER_AREA = 2
-DEFAULT_SEQUENCES_PER_HOTSPOT = 3
-DEFAULT_MAX_REQUESTS = 48
+DEFAULT_HOTSPOTS_PER_AREA: int | None = None
+DEFAULT_SEQUENCES_PER_HOTSPOT: int | None = None
+DEFAULT_MAX_REQUESTS: int | None = None
 DEFAULT_ITEMS_PER_PAGE = 150
 DEFAULT_MIN_REQUEST_INTERVAL_SEC = 45.0
 
@@ -145,20 +147,20 @@ def build_sequence_plan(
     records: list[dict[str, Any]],
     *,
     items_per_page: int = DEFAULT_ITEMS_PER_PAGE,
-    hotspots_per_area: int = DEFAULT_HOTSPOTS_PER_AREA,
-    sequences_per_hotspot: int = DEFAULT_SEQUENCES_PER_HOTSPOT,
-    max_requests: int = DEFAULT_MAX_REQUESTS,
+    hotspots_per_area: int | None = DEFAULT_HOTSPOTS_PER_AREA,
+    sequences_per_hotspot: int | None = DEFAULT_SEQUENCES_PER_HOTSPOT,
+    max_requests: int | None = DEFAULT_MAX_REQUESTS,
 ) -> tuple[list[SequencePageRequest], PlanSummary]:
-    """Build an input-order-independent, strictly bounded request plan."""
+    """Build an input-order-independent plan bounded by finite discovery input."""
 
     if not 1 <= items_per_page <= 150:
         raise ValueError("items_per_page must be between 1 and 150")
-    if not 1 <= hotspots_per_area <= DEFAULT_HOTSPOTS_PER_AREA:
-        raise ValueError("hotspots_per_area must be between 1 and 2")
-    if not 1 <= sequences_per_hotspot <= DEFAULT_SEQUENCES_PER_HOTSPOT:
-        raise ValueError("sequences_per_hotspot must be between 1 and 3")
-    if max_requests < 1:
-        raise ValueError("max_requests must be >= 1")
+    if hotspots_per_area is not None and hotspots_per_area < 1:
+        raise ValueError("hotspots_per_area must be >= 1 when configured")
+    if sequences_per_hotspot is not None and sequences_per_hotspot < 1:
+        raise ValueError("sequences_per_hotspot must be >= 1 when configured")
+    if max_requests is not None and max_requests < 1:
+        raise ValueError("max_requests must be >= 1 when configured")
 
     hotspot_photo_ids: dict[tuple[str, str], set[str]] = defaultdict(set)
     sequence_indices: dict[tuple[str, str, str], list[int]] = defaultdict(list)
@@ -211,7 +213,12 @@ def build_sequence_plan(
     selected_hotspots: set[tuple[str, str]] = set()
     for area_id in sorted(hotspots_by_area):
         ranked_hotspots = sorted(hotspots_by_area[area_id], key=lambda item: (-item[1], item[0]))
-        for query, hotspot_strength in ranked_hotspots[:hotspots_per_area]:
+        selected_area_hotspots = (
+            ranked_hotspots[:hotspots_per_area]
+            if hotspots_per_area is not None
+            else ranked_hotspots
+        )
+        for query, hotspot_strength in selected_area_hotspots:
             selected_hotspots.add((area_id, query))
             candidates: list[tuple[str, int, int]] = []
             for (candidate_area, candidate_query, sequence_id), photo_ids in sequence_photo_ids.items():
@@ -221,7 +228,12 @@ def build_sequence_plan(
                 representative_index = indices[(len(indices) - 1) // 2] if indices else 0
                 candidates.append((sequence_id, len(photo_ids), representative_index))
             candidates.sort(key=lambda item: (-item[1], item[0], item[2]))
-            for sequence_id, sequence_strength, representative_index in candidates[:sequences_per_hotspot]:
+            selected_hotspot_sequences = (
+                candidates[:sequences_per_hotspot]
+                if sequences_per_hotspot is not None
+                else candidates
+            )
+            for sequence_id, sequence_strength, representative_index in selected_hotspot_sequences:
                 page = representative_index // items_per_page + 1
                 requests.append(
                     SequencePageRequest(
@@ -243,7 +255,8 @@ def build_sequence_plan(
                 )
 
     requests_before_limit = len(requests)
-    requests = requests[:max_requests]
+    if max_requests is not None:
+        requests = requests[:max_requests]
     planned_hotspots = {(request.area_id, request.hotspot_query) for request in requests}
     summary = PlanSummary(
         discovery_records=len(records),
@@ -330,9 +343,9 @@ def _plan_payload(
     discovery_sha256: str,
     requests: list[SequencePageRequest],
     summary: PlanSummary,
-    hotspots_per_area: int,
-    sequences_per_hotspot: int,
-    max_requests: int,
+    hotspots_per_area: int | None,
+    sequences_per_hotspot: int | None,
+    max_requests: int | None,
     items_per_page: int,
     min_request_interval_sec: float,
 ) -> dict[str, Any]:
@@ -375,9 +388,9 @@ def run(
     checkpoint_path: Path | None = None,
     stats_path: Path | None = None,
     items_per_page: int = DEFAULT_ITEMS_PER_PAGE,
-    hotspots_per_area: int = DEFAULT_HOTSPOTS_PER_AREA,
-    sequences_per_hotspot: int = DEFAULT_SEQUENCES_PER_HOTSPOT,
-    max_requests: int = DEFAULT_MAX_REQUESTS,
+    hotspots_per_area: int | None = DEFAULT_HOTSPOTS_PER_AREA,
+    sequences_per_hotspot: int | None = DEFAULT_SEQUENCES_PER_HOTSPOT,
+    max_requests: int | None = DEFAULT_MAX_REQUESTS,
     min_request_interval_sec: float = DEFAULT_MIN_REQUEST_INTERVAL_SEC,
     request_retries: int = 5,
     backoff_sec: float = 1.5,
@@ -451,14 +464,44 @@ def run(
     previous_stats = read_json(statistics_path, default={})
     if not isinstance(previous_stats, dict):
         raise ValueError(f"{statistics_path} must contain a JSON object")
+    desired_fingerprint = fingerprint
+    checkpoint = checkpoint_path or output_json.with_suffix(".checkpoint.json")
+    checkpoint_payload = read_json(checkpoint, default={})
+    resume_fingerprint = desired_fingerprint
+    checkpoint_plan_expanded = False
+    if isinstance(checkpoint_payload, dict):
+        stored_fingerprint = checkpoint_payload.get("config_fingerprint")
+        completed_keys = checkpoint_payload.get("completed_tiles", [])
+        failed_keys = checkpoint_payload.get("failed_tiles", {})
+        if (
+            isinstance(stored_fingerprint, str)
+            and stored_fingerprint
+            and stored_fingerprint != desired_fingerprint
+            and isinstance(completed_keys, list)
+            and isinstance(failed_keys, dict)
+        ):
+            progress_keys = {str(value) for value in completed_keys} | {
+                str(value) for value in failed_keys
+            }
+            current_keys = {request.key for request in requests}
+            if progress_keys and progress_keys.issubset(current_keys):
+                # Every completed/failed operation is identified by a hash of
+                # its query, sequence, page, and page size.  A strict plan
+                # expansion can therefore reuse those exact operations while
+                # migrating the checkpoint to the new full-plan fingerprint.
+                resume_fingerprint = stored_fingerprint
+                checkpoint_plan_expanded = True
+
     state = IngestionState.load(
         source="kartaview",
         output_json=output_json,
         checkpoint_path=checkpoint_path,
         stats_path=statistics_path,
-        config_fingerprint=fingerprint,
+        config_fingerprint=resume_fingerprint,
     )
+    state.config_fingerprint = desired_fingerprint
     state.stats.update(summary.as_dict())
+    state.stats["checkpoint_plan_expanded"] = checkpoint_plan_expanded
     state.stats["plan_only"] = False
     state.stats["minimum_request_interval_sec"] = min_request_interval_sec
     state.stats["estimated_minimum_duration_seconds"] = payload[
@@ -603,12 +646,20 @@ def main() -> None:
     parser.add_argument("--stats", type=Path)
     parser.add_argument("--items-per-page", type=int, default=DEFAULT_ITEMS_PER_PAGE)
     parser.add_argument(
-        "--hotspots-per-area", type=int, default=DEFAULT_HOTSPOTS_PER_AREA
+        "--hotspots-per-area",
+        type=int,
+        help="optional explicit hotspot limit per area; omitted by default",
     )
     parser.add_argument(
-        "--sequences-per-hotspot", type=int, default=DEFAULT_SEQUENCES_PER_HOTSPOT
+        "--sequences-per-hotspot",
+        type=int,
+        help="optional explicit sequence limit per hotspot; omitted by default",
     )
-    parser.add_argument("--max-requests", type=int, default=DEFAULT_MAX_REQUESTS)
+    parser.add_argument(
+        "--max-requests",
+        type=int,
+        help="optional explicit global request limit; omitted by default",
+    )
     parser.add_argument(
         "--min-request-interval-sec",
         type=float,

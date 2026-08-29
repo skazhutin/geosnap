@@ -95,7 +95,7 @@ class _FixtureReranker:
                     retrieval_score=candidate.retrieval_score,
                     original_rank=candidate.original_rank,
                     final_rank=candidate.original_rank,
-                    rerank_score=(candidate.retrieval_score + 1.0) / 2.0,
+                    rerank_score=candidate.retrieval_score,
                     verification_score=0.5 if verified else None,
                     evidence=None,
                     metadata=candidate.metadata,

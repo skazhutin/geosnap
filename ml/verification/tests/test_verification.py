@@ -7,6 +7,9 @@ import cv2
 import numpy as np
 import pytest
 
+from ml.evaluation.verification_ablation import localization_results_from_rerank
+from ml.indexing.faiss_index import RetrievalResult
+from ml.localization import LocalizerConfig, SpatialLocalizer
 from ml.verification import (
     MAX_VERIFY_TOP_K,
     BaseGeometricVerifier,
@@ -156,6 +159,47 @@ def test_reranker_verifies_only_top_k_and_never_reorders_the_tail() -> None:
     ]
     assert result.candidates[2].verification_score is None
     assert result.candidates[3].verification_score is None
+
+
+def test_zero_geometric_weight_is_strict_retrieval_identity() -> None:
+    verifier = FixtureVerifier([1.0, 0.0], max_pairs=2)
+    config = VerificationConfig(enabled=True, verify_top_k=2, geometric_weight=0.0)
+    metadata = [
+        {"lat": 55.7500, "lon": 37.6100},
+        {"lat": 55.7501, "lon": 37.6101},
+        {"lat": 55.8000, "lon": 37.7000},
+    ]
+    candidates = [
+        VerificationCandidate("first", "first.jpg", 0.90, 1, metadata=metadata[0]),
+        VerificationCandidate("second", "second.jpg", 0.85, 2, metadata=metadata[1]),
+        VerificationCandidate("tail", "tail.jpg", 0.70, 3, metadata=metadata[2]),
+    ]
+    result = GeometricReranker(config, verifier=verifier).rerank("query.jpg", candidates)
+    assert [item.reference_id for item in result.candidates] == [
+        "first",
+        "second",
+        "tail",
+    ]
+    assert [item.rerank_score for item in result.candidates] == [0.90, 0.85, 0.70]
+
+    baseline = [
+        RetrievalResult(
+            reference_id=candidate.reference_id,
+            score=candidate.retrieval_score,
+            rank=candidate.original_rank,
+            metadata=candidate.metadata,
+        )
+        for candidate in candidates
+    ]
+    converted = localization_results_from_rerank(result)
+    localizer = SpatialLocalizer(LocalizerConfig(confidence_threshold=0.0))
+    before = localizer.localize(baseline, query_quality=0.8)
+    after = localizer.localize(converted, query_quality=0.8)
+    assert after.status == before.status
+    assert after.lat == before.lat
+    assert after.lon == before.lon
+    assert after.confidence == before.confidence
+    assert after.reasons == before.reasons
 
 
 def test_opencv_sift_prefers_a_perspective_transform_over_distractor() -> None:

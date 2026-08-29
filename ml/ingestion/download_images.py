@@ -37,6 +37,37 @@ SOURCE_DOWNLOAD_HOST_SUFFIXES: dict[str, frozenset[str]] = {
 }
 
 
+def _download_urls(row: dict[str, Any], source: str) -> list[str]:
+    primary = str(row.get("download_url") or "")
+    urls = [primary] if primary else []
+    if source != "kartaview":
+        return urls
+    try:
+        metadata = json.loads(str(row.get("metadata_json") or "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return urls
+    if not isinstance(metadata, dict):
+        return urls
+    for key in ("imageProcUrl", "imageLthUrl", "fileurlProc", "fileurlLTh"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.startswith("https://") and value not in urls:
+            urls.append(value)
+    return urls
+
+
+def _combine_download_results(first: DownloadResult, second: DownloadResult) -> DownloadResult:
+    return DownloadResult(
+        status=second.status,
+        reason=second.reason,
+        width=second.width,
+        height=second.height,
+        bytes_written=second.bytes_written,
+        network_attempts=first.network_attempts + second.network_attempts,
+        retry_attempts=first.retry_attempts + second.retry_attempts,
+        timeout_events=first.timeout_events + second.timeout_events,
+    )
+
+
 def _iter_manifest_records(
     manifest_path: Path,
     *,
@@ -93,32 +124,39 @@ def _download_one(
     max_image_dimension: int,
 ) -> tuple[str, str, DownloadResult]:
     reference_id = str(row.get("id") or "")
-    url = str(row.get("download_url") or "")
-    if not url or url.lower() in {"nan", "none", "<na>"}:
-        return reference_id, url, DownloadResult("failed", reason="missing_download_url")
+    source = str(row.get("source") or "").strip().lower()
+    urls = [url for url in _download_urls(row, source) if url.lower() not in {"nan", "none", "<na>"}]
+    if not urls:
+        return reference_id, "", DownloadResult("failed", reason="missing_download_url")
     path = Path(str(row.get("image_path") or ""))
     if not str(path) or str(path) == ".":
-        return reference_id, url, DownloadResult("failed", reason="missing_image_path")
-    source = str(row.get("source") or "").strip().lower()
+        return reference_id, urls[0], DownloadResult("failed", reason="missing_image_path")
     allowed_host_suffixes = SOURCE_DOWNLOAD_HOST_SUFFIXES.get(source)
     if allowed_host_suffixes is None:
-        return reference_id, url, DownloadResult("failed", reason="unsupported_source")
-    result = download_file_detailed(
-        url,
-        path,
-        retries=retries,
-        timeout_sec=timeout_sec,
-        backoff_sec=backoff_sec,
-        session=sessions.get(),
-        min_valid_size_bytes=min_valid_size_bytes,
-        min_width=min_width,
-        min_height=min_height,
-        max_download_bytes=max_download_bytes,
-        max_image_pixels=max_image_pixels,
-        max_image_dimension=max_image_dimension,
-        allowed_host_suffixes=allowed_host_suffixes,
-    )
-    return reference_id, url, result
+        return reference_id, urls[0], DownloadResult("failed", reason="unsupported_source")
+    result: DownloadResult | None = None
+    attempted_url = urls[0]
+    for attempted_url in urls:
+        attempt = download_file_detailed(
+            attempted_url,
+            path,
+            retries=retries,
+            timeout_sec=timeout_sec,
+            backoff_sec=backoff_sec,
+            session=sessions.get(),
+            min_valid_size_bytes=min_valid_size_bytes,
+            min_width=min_width,
+            min_height=min_height,
+            max_download_bytes=max_download_bytes,
+            max_image_pixels=max_image_pixels,
+            max_image_dimension=max_image_dimension,
+            allowed_host_suffixes=allowed_host_suffixes,
+        )
+        result = attempt if result is None else _combine_download_results(result, attempt)
+        if result.success:
+            break
+    assert result is not None
+    return reference_id, attempted_url, result
 
 
 def run(

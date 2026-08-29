@@ -8,6 +8,7 @@ import math
 import re
 import warnings
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -128,8 +129,8 @@ def _write_markdown_report(path: Path, summary: dict[str, Any]) -> None:
 
 
 def run(
-    mapillary_json: Path,
-    kartaview_json: Path,
+    mapillary_json: Path | Sequence[Path],
+    kartaview_json: Path | Sequence[Path],
     output_manifest: Path,
     dedup_radius_m: float = 7.0,
     max_per_cluster: int = 2,
@@ -150,28 +151,40 @@ def run(
     invalid_rows = 0
     duplicate_source_ids = 0
     source_counts: Counter[str] = Counter()
-    for source, path in (("mapillary", mapillary_json), ("kartaview", kartaview_json)):
-        payload = read_json(path, default=[])
-        if not isinstance(payload, list):
-            raise ValueError(f"{path} must contain a JSON array")
-        for item in payload:
-            source_rows_read += 1
-            if not isinstance(item, dict):
-                invalid_rows += 1
-                continue
-            try:
-                normalized = normalize_record(source, item, city_id=city_id, image_root=image_root)
-            except (TypeError, ValueError):
-                normalized = None
-            if normalized is None:
-                invalid_rows += 1
-                continue
-            if normalized["id"] in seen_reference_ids:
-                duplicate_source_ids += 1
-                continue
-            seen_reference_ids.add(normalized["id"])
-            rows.append(normalized)
-            source_counts[source] += 1
+    def source_paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
+        return (value,) if isinstance(value, Path) else tuple(Path(path) for path in value)
+
+    inputs = {
+        "mapillary": source_paths(mapillary_json),
+        "kartaview": source_paths(kartaview_json),
+    }
+    if not all(inputs.values()):
+        raise ValueError("at least one JSON input is required for each live source")
+    for source, paths in inputs.items():
+        for path in paths:
+            if not path.is_file():
+                raise FileNotFoundError(f"missing {source} input: {path}")
+            payload = read_json(path, default=None)
+            if not isinstance(payload, list):
+                raise ValueError(f"{path} must contain a JSON array")
+            for item in payload:
+                source_rows_read += 1
+                if not isinstance(item, dict):
+                    invalid_rows += 1
+                    continue
+                try:
+                    normalized = normalize_record(source, item, city_id=city_id, image_root=image_root)
+                except (TypeError, ValueError):
+                    normalized = None
+                if normalized is None:
+                    invalid_rows += 1
+                    continue
+                if normalized["id"] in seen_reference_ids:
+                    duplicate_source_ids += 1
+                    continue
+                seen_reference_ids.add(normalized["id"])
+                rows.append(normalized)
+                source_counts[source] += 1
 
     manifest = manifest_dataframe(rows)
     write_manifest(manifest, output_manifest, allow_empty=True)
@@ -182,6 +195,9 @@ def run(
         "duplicate_source_ids": duplicate_source_ids,
         "spatial_pre_quality_removals": 0,
         "sources": dict(sorted(source_counts.items())),
+        "source_files": {
+            source: [str(path) for path in paths] for source, paths in sorted(inputs.items())
+        },
         "output_manifest": str(output_manifest),
     }
     json_path = report_json or output_manifest.with_suffix(".report.json")
@@ -194,8 +210,8 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Merge raw source metadata into a canonical manifest")
-    parser.add_argument("--mapillary-json", default="data/raw/mapillary_raw.json")
-    parser.add_argument("--kartaview-json", default="data/raw/kartaview_raw.json")
+    parser.add_argument("--mapillary-json", action="append", type=Path)
+    parser.add_argument("--kartaview-json", action="append", type=Path)
     parser.add_argument("--output-manifest", default="data/raw/manifest.parquet")
     parser.add_argument("--city-id", default="moscow")
     parser.add_argument("--image-root", default="data/raw/images")
@@ -207,8 +223,8 @@ def main() -> None:
     args = parser.parse_args()
 
     run(
-        mapillary_json=Path(args.mapillary_json),
-        kartaview_json=Path(args.kartaview_json),
+        mapillary_json=args.mapillary_json or [Path("data/raw/mapillary_raw.json")],
+        kartaview_json=args.kartaview_json or [Path("data/raw/kartaview_raw.json")],
         output_manifest=Path(args.output_manifest),
         dedup_radius_m=args.dedup_radius_m,
         max_per_cluster=args.max_per_cluster,

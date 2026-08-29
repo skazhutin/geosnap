@@ -130,6 +130,43 @@ class MergeSourcesTests(unittest.TestCase):
             for value in df["metadata_json"]:
                 json.loads(value)
 
+    def test_multiple_live_metadata_files_are_unioned_and_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            common = {
+                "lat": 55.75,
+                "lon": 37.61,
+                "image_url": "https://x/image.jpg",
+                "attribution": "Mapillary image by fixture",
+            }
+            first = root / "m1.json"
+            second = root / "m2.json"
+            kartaview = root / "k.json"
+            write_json(
+                first,
+                [common | {"id": "a", "source_url": "https://www.mapillary.com/app/?pKey=a"}],
+            )
+            write_json(
+                second,
+                [
+                    common | {"id": "a", "source_url": "https://www.mapillary.com/app/?pKey=a"},
+                    common | {"id": "b", "source_url": "https://www.mapillary.com/app/?pKey=b"},
+                ],
+            )
+            write_json(kartaview, [])
+            summary = run([first, second], kartaview, root / "manifest.parquet")
+            self.assertEqual(summary["normalized_rows"], 2)
+            self.assertEqual(summary["duplicate_source_ids"], 1)
+            self.assertEqual(summary["source_files"]["mapillary"], [str(first), str(second)])
+
+    def test_missing_live_metadata_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            kartaview = root / "k.json"
+            write_json(kartaview, [])
+            with self.assertRaisesRegex(FileNotFoundError, "missing mapillary input"):
+                run(root / "missing.json", kartaview, root / "manifest.parquet")
+
     def test_incomplete_source_attribution_is_quarantined(self) -> None:
         base = {"id": "x", "lat": 55.75, "lon": 37.61, "image_url": "https://x/y.jpg"}
         self.assertIsNone(normalize_record("mapillary", base))

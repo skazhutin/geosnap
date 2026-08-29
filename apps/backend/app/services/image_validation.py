@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import math
 import warnings
 from dataclasses import dataclass
 from email.message import Message
@@ -10,7 +9,7 @@ from email.policy import default as email_policy
 from time import perf_counter
 
 from fastapi import Request
-from PIL import Image, ImageFilter, ImageOps, ImageStat, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.config import Settings
 from app.services.errors import (
@@ -19,6 +18,7 @@ from app.services.errors import (
     PublicAPIError,
     UnsupportedFormatError,
 )
+from ml.query_quality import measure_query_image_quality
 
 _ALLOWED_TYPES = {
     "image/jpeg": ("JPEG", {".jpg", ".jpeg"}),
@@ -178,30 +178,13 @@ def prepare_image(upload: UploadedPart, settings: Settings) -> PreparedImage:
     except (UnidentifiedImageError, OSError, SyntaxError, ValueError, Image.DecompressionBombError) as exc:
         raise InvalidImageError() from exc
 
-    if rgb.width > 512 or rgb.height > 512:
-        scale = min(512.0 / rgb.width, 512.0 / rgb.height)
-        diag_image = rgb.resize(
-            (max(1, round(rgb.width * scale)), max(1, round(rgb.height * scale))),
-            Image.Resampling.BILINEAR,
-        )
-    else:
-        diag_image = rgb
-    gray = diag_image.convert("L")
-    brightness = ImageStat.Stat(gray).mean[0] / 255.0
-    histogram = gray.histogram()
-    exposure = sum(histogram[8:248]) / max(1, gray.width * gray.height)
-    edges = gray.filter(ImageFilter.FIND_EDGES)
-    if edges.width > 2 and edges.height > 2:
-        edges = edges.crop((1, 1, edges.width - 1, edges.height - 1))
-    edge_variance = ImageStat.Stat(edges).var[0]
-    # A bounded, monotonic diagnostic rather than an aggressive reject rule.
-    sharpness = 1.0 - math.exp(-edge_variance / 1000.0)
+    quality = measure_query_image_quality(rgb)
     diagnostics = ImageDiagnostics(
         width=rgb.width,
         height=rgb.height,
-        sharpness=max(0.0, min(1.0, sharpness)),
-        brightness=max(0.0, min(1.0, brightness)),
-        exposure=max(0.0, min(1.0, exposure)),
+        sharpness=quality.sharpness,
+        brightness=quality.brightness,
+        exposure=quality.exposure,
         preprocess_ms=(perf_counter() - started) * 1000.0,
     )
     return PreparedImage(

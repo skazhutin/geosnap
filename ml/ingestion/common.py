@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -170,6 +170,8 @@ def request_with_retry(
     retry_statuses: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504}),
     metrics: RetryMetrics | None = None,
     before_request: Callable[[], None] | None = None,
+    request_kwargs: Mapping[str, Any] | None = None,
+    response_validator: Callable[[Any], None] | None = None,
 ) -> Any:
     if retries < 1:
         raise ValueError("retries must be >= 1")
@@ -177,6 +179,9 @@ def request_with_retry(
         raise ValueError("timeout_sec must be > 0")
     if backoff_sec < 0:
         raise ValueError("backoff_sec must be >= 0")
+    extra_request_kwargs = dict(request_kwargs or {})
+    if {"params", "timeout"}.intersection(extra_request_kwargs):
+        raise ValueError("request_kwargs cannot override params or timeout")
 
     for attempt in range(1, retries + 1):
         if before_request is not None:
@@ -184,7 +189,12 @@ def request_with_retry(
         if metrics is not None:
             metrics.network_attempts += 1
         try:
-            response = session.get(url, params=params or {}, timeout=timeout_sec)
+            response = session.get(
+                url,
+                params=params or {},
+                timeout=timeout_sec,
+                **extra_request_kwargs,
+            )
         except Exception as exc:
             if metrics is not None and is_timeout_error(exc):
                 metrics.timeout_events += 1
@@ -210,6 +220,28 @@ def request_with_retry(
                 if hasattr(response, "close"):
                     response.close()
                 raise
+            if response_validator is None:
+                return response
+            try:
+                response_validator(response)
+            except Exception as exc:
+                if hasattr(response, "close"):
+                    response.close()
+                if attempt == retries:
+                    raise
+                if metrics is not None:
+                    metrics.retry_attempts += 1
+                delay = retry_delay_seconds(None, attempt=attempt, backoff_sec=backoff_sec)
+                logger.warning(
+                    "request_content_retry attempt=%s/%s delay_sec=%.2f url=%s reason=%s",
+                    attempt,
+                    retries,
+                    delay,
+                    redact_url(url),
+                    sanitize_error_message(exc),
+                )
+                time.sleep(delay)
+                continue
             return response
         if metrics is not None:
             metrics.retryable_http_events += 1

@@ -399,7 +399,7 @@ def run_verification_ablation(
                 "retrieval_score_min": config.retrieval_score_min,
                 "retrieval_score_max": config.retrieval_score_max,
                 "score_integration": (
-                    "raw retrieval score retained; combined rerank_score supplied once as localization_score"
+                    "geometric evidence mapped to raw retrieval-score domain; combined rerank_score supplied once as localization_score; weight=0 is identity"
                 ),
             },
         },

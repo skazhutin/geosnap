@@ -50,6 +50,20 @@ class ParserTests(unittest.TestCase):
         self.assertIn("Grab", parsed["attribution"])
         self.assertIn("sequence-7", parsed["source_url"])
 
+    def test_parse_kartaview_prefers_official_cdn_proxy(self) -> None:
+        parsed = parse_kartaview_item(
+            {
+                "id": "kv-1",
+                "lat": 55.76,
+                "lng": 37.62,
+                "fileurlProc": "https://storage7.openstreetcam.org/unavailable.jpg",
+                "imageProcUrl": "https://cdn.kartaview.org/proxy-token",
+            }
+        )
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["download_url"], "https://cdn.kartaview.org/proxy-token")
+
     def test_parse_kartaview_keeps_zero_values(self) -> None:
         parsed = parse_kartaview_item(
             {"id": "0", "lat": 0.0, "lng": 0.0, "timestamp": "2025-01-01", "url": "https://example.test/zero.jpg"}
