@@ -44,7 +44,11 @@ from ml.ingestion.schema import (
     write_manifest,
 )
 
-DEFAULT_REQUIRED_SOURCES = ("mapillary", "kartaview", "msls")
+# The production gallery is intentionally limited to sources whose individual
+# street-image attribution can be preserved through the web product.  MSLS is
+# supported as an explicitly opted-in research/benchmark input, but its dataset
+# terms do not make it an implicit deployable gallery source.
+DEFAULT_REQUIRED_SOURCES = ("mapillary", "kartaview")
 SOURCE_COLORS = {
     "mapillary": "#e91e63",
     "kartaview": "#168aad",
@@ -1290,6 +1294,14 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
             f"{values['spatial_density']['nearest_reference_distance_m']['p50']} | "
             f"{values['heading_viewpoint_diversity']['heading_present']} |"
         )
+    source_policy = (
+        "The default publication scope is deployable Mapillary and KartaView imagery."
+        if "msls" not in report["validation"]["actual_sources"]
+        else (
+            "MSLS database/query labels remain provenance only; this explicit research "
+            "publication is not a deployable gallery."
+        )
+    )
     lines.extend(
         [
             "",
@@ -1299,7 +1311,7 @@ def _write_markdown(path: Path, report: Mapping[str, Any]) -> None:
             "",
             "## Source policy",
             "",
-            "MSLS database/query labels remain provenance only. Provider sequence metrics are namespaced by source.",
+            source_policy + " Provider sequence metrics are namespaced by source.",
         ]
     )
     _atomic_text(path, "\n".join(lines) + "\n")
@@ -1319,6 +1331,7 @@ def run(
     grid_lon_bins: int = 60,
     aoi_geojson: Path | None = None,
     filter_outside_aoi: bool = False,
+    required_sources: Sequence[str] = DEFAULT_REQUIRED_SOURCES,
 ) -> dict[str, Any]:
     """Combine canonical source manifests and publish coverage diagnostics."""
 
@@ -1329,7 +1342,9 @@ def run(
         raise ValueError("filter_outside_aoi requires aoi_geojson")
     aoi_boundary = load_aoi_boundary(aoi_geojson) if aoi_geojson is not None else None
     coverage_bounds = _coverage_bounds(aoi_boundary)
-    required = DEFAULT_REQUIRED_SOURCES
+    required = tuple(dict.fromkeys(str(source).strip().lower() for source in required_sources))
+    if not required or any(not source for source in required):
+        raise ValueError("required_sources must contain nonblank source names")
     map_destinations = {source: maps_dir / f"{source}_coverage.png" for source in required}
     map_destinations["combined_sources"] = maps_dir / "combined_coverage_sources.png"
     map_destinations["combined_density"] = maps_dir / "combined_coverage_density.png"
@@ -1515,6 +1530,15 @@ def main() -> None:
         action="store_true",
         help="explicitly exclude input rows outside --aoi-geojson before validation and publication",
     )
+    parser.add_argument(
+        "--required-source",
+        action="append",
+        dest="required_sources",
+        help=(
+            "repeat to publish an explicit source set; defaults to the deployable "
+            "Mapillary + KartaView gallery. MSLS is research-only unless explicitly included."
+        ),
+    )
     args = parser.parse_args()
     run(
         input_manifests=args.input_manifest,
@@ -1529,6 +1553,7 @@ def main() -> None:
         grid_lon_bins=args.grid_lon_bins,
         aoi_geojson=args.aoi_geojson,
         filter_outside_aoi=args.filter_outside_aoi,
+        required_sources=tuple(args.required_sources or DEFAULT_REQUIRED_SOURCES),
     )
 
 

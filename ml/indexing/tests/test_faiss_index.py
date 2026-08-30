@@ -12,6 +12,7 @@ import pytest
 
 from ml.index import FaissExactIndex as CompatibilityIndex
 from ml.indexing import FaissExactIndex, FaissIndexError, FaissIndexWorker
+from ml.indexing.faiss_index import FaissExactIndexBuilder
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("faiss") is None,
@@ -153,6 +154,61 @@ def test_query_validation() -> None:
         index.search_one(np.ones(2, dtype=np.float32), k=1)
     with pytest.raises(FaissIndexError, match="zero-norm"):
         index.search_one(np.zeros(3, dtype=np.float32), k=1)
+
+
+def test_incremental_builder_matches_one_shot_exact_search() -> None:
+    descriptors = np.asarray(
+        [[10.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 2.0], [2.0, 2.0, 0.0]],
+        dtype=np.float32,
+    )
+    ids = ["red", "green", "blue", "yellow"]
+    metadata = [
+        {"lat": 55.75, "lon": 37.61},
+        {"lat": 55.76, "lon": 37.62},
+        {"lat": 55.77, "lon": 37.63},
+        {"lat": 55.78, "lon": 37.64},
+    ]
+    one_shot = FaissExactIndex.build(
+        descriptors,
+        ids,
+        reference_metadata=metadata,
+        retriever_metadata={"model_name": "test-model"},
+        index_id="moscow-test",
+        city_id="moscow",
+    )
+    builder = FaissExactIndexBuilder(
+        descriptor_dim=3,
+        expected_size=4,
+        retriever_metadata={"model_name": "test-model"},
+        index_id="moscow-test",
+        city_id="moscow",
+    )
+    builder.add_batch(descriptors[:2], ids[:2], reference_metadata=metadata[:2])
+    builder.add_batch(descriptors[2:], ids[2:], reference_metadata=metadata[2:])
+    streamed = builder.finish()
+
+    query = np.asarray([0.9, 0.1, 0.0], dtype=np.float32)
+    assert [match.reference_id for match in streamed.search_one(query, k=4)] == [
+        match.reference_id for match in one_shot.search_one(query, k=4)
+    ]
+    np.testing.assert_allclose(
+        [match.score for match in streamed.search_one(query, k=4)],
+        [match.score for match in one_shot.search_one(query, k=4)],
+        atol=1e-7,
+    )
+    assert streamed.build_metadata["gallery_size"] == 4
+    assert all(match.metadata["index_id"] == "moscow-test" for match in streamed.search_one(query, k=4))
+
+
+def test_incremental_builder_rejects_duplicate_dimension_and_incomplete_build() -> None:
+    builder = FaissExactIndexBuilder(descriptor_dim=3, expected_size=2)
+    builder.add_batch(np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32), ["one"])
+    with pytest.raises(FaissIndexError, match="unique across streamed"):
+        builder.add_batch(np.asarray([[0.0, 1.0, 0.0]], dtype=np.float32), ["one"])
+    with pytest.raises(FaissIndexError, match="dimension"):
+        builder.add_batch(np.asarray([[0.0, 1.0]], dtype=np.float32), ["two"])
+    with pytest.raises(FaissIndexError, match="does not match expected_size"):
+        builder.finish()
 
 
 def test_process_isolated_worker_keeps_index_loaded_and_returns_typed_results(

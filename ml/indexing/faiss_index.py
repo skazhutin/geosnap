@@ -109,6 +109,101 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _validate_reference_ids(reference_ids: Sequence[str]) -> list[str]:
+    """Validate stable IDs without changing their manifest order."""
+
+    ids = [str(value) for value in reference_ids]
+    if not ids:
+        raise FaissIndexError("cannot build a FAISS index with zero references")
+    if any(not value for value in ids):
+        raise FaissIndexError("reference IDs must be non-empty strings")
+    if len(ids) != len(set(ids)):
+        raise FaissIndexError("reference IDs must be unique")
+    return ids
+
+
+def _prepare_reference_metadata(
+    ids: Sequence[str],
+    reference_metadata: Sequence[Mapping[str, Any]] | None,
+    *,
+    index_id: str,
+    city_id: str | None,
+) -> list[dict[str, Any]]:
+    """Validate and scope ordered metadata for prevalidated reference IDs."""
+
+    if reference_metadata is None:
+        references = [{} for _ in ids]
+    else:
+        references = [dict(_json_safe(value)) for value in reference_metadata]
+        if len(references) != len(ids):
+            raise FaissIndexError("reference metadata count does not match IDs")
+    for reference_id, metadata in zip(ids, references, strict=True):
+        row_index_id = metadata.get("index_id")
+        if row_index_id is not None and str(row_index_id) != str(index_id):
+            raise FaissIndexError(
+                f"reference {reference_id!r} index_id {row_index_id!r} does not match build index_id {index_id!r}"
+            )
+        metadata["index_id"] = index_id
+        row_city_id = metadata.get("city_id")
+        if city_id is not None and row_city_id is not None and str(row_city_id) != str(city_id):
+            raise FaissIndexError(
+                f"reference {reference_id!r} city_id {row_city_id!r} does not match build city_id {city_id!r}"
+            )
+        if city_id is not None:
+            metadata["city_id"] = city_id
+    return references
+
+
+def _prepare_reference_rows(
+    reference_ids: Sequence[str],
+    reference_metadata: Sequence[Mapping[str, Any]] | None,
+    *,
+    index_id: str,
+    city_id: str | None,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Validate and scope one ordered set of reference sidecars."""
+
+    ids = _validate_reference_ids(reference_ids)
+    references = _prepare_reference_metadata(
+        ids,
+        reference_metadata,
+        index_id=index_id,
+        city_id=city_id,
+    )
+    return ids, references
+
+
+def _build_metadata(
+    *,
+    index_id: str,
+    city_id: str | None,
+    gallery_size: int,
+    descriptor_dim: int,
+    retriever_metadata: Mapping[str, Any] | None,
+    extra_metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Create the common immutable metadata used by one-shot and streamed builds."""
+
+    metadata: dict[str, Any] = {
+        "schema_version": INDEX_SCHEMA_VERSION,
+        "built_at": datetime.now(UTC).isoformat(),
+        "index_id": index_id,
+        "city_id": city_id,
+        "gallery_size": gallery_size,
+        "descriptor_dim": descriptor_dim,
+        "normalization": "L2",
+        "similarity": "cosine_via_inner_product",
+        "faiss_index_type": "IndexFlatIP",
+        "retriever": dict(retriever_metadata or {}),
+    }
+    if extra_metadata:
+        reserved = (set(metadata) | _COMMIT_METADATA_KEYS).intersection(extra_metadata)
+        if reserved:
+            raise FaissIndexError(f"extra_metadata cannot override reserved keys: {sorted(reserved)}")
+        metadata.update(dict(extra_metadata))
+    return metadata
+
+
 def _read_committed_sidecars(
     directory: Path,
 ) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
@@ -249,59 +344,30 @@ class FaissExactIndex:
         extra_metadata: Mapping[str, Any] | None = None,
     ) -> FaissExactIndex:
         faiss = _import_faiss()
-        ids = [str(value) for value in reference_ids]
-        if not ids:
-            raise FaissIndexError("cannot build a FAISS index with zero references")
-        if any(not value for value in ids):
-            raise FaissIndexError("reference IDs must be non-empty strings")
-        if len(ids) != len(set(ids)):
-            raise FaissIndexError("reference IDs must be unique")
+        ids = _validate_reference_ids(reference_ids)
         try:
             matrix = l2_normalize(descriptors)
         except DescriptorError as exc:
             raise FaissIndexError(str(exc)) from exc
         if matrix.shape[0] != len(ids):
             raise FaissIndexError(f"descriptor rows ({matrix.shape[0]}) do not match IDs ({len(ids)})")
-        if reference_metadata is None:
-            references = [{} for _ in ids]
-        else:
-            references = [dict(_json_safe(value)) for value in reference_metadata]
-            if len(references) != len(ids):
-                raise FaissIndexError("reference metadata count does not match IDs")
-        for reference_id, metadata in zip(ids, references, strict=True):
-            row_index_id = metadata.get("index_id")
-            if row_index_id is not None and str(row_index_id) != str(index_id):
-                raise FaissIndexError(
-                    f"reference {reference_id!r} index_id {row_index_id!r} does not match build index_id {index_id!r}"
-                )
-            metadata["index_id"] = index_id
-            row_city_id = metadata.get("city_id")
-            if city_id is not None and row_city_id is not None and str(row_city_id) != str(city_id):
-                raise FaissIndexError(
-                    f"reference {reference_id!r} city_id {row_city_id!r} does not match build city_id {city_id!r}"
-                )
-            if city_id is not None:
-                metadata["city_id"] = city_id
+        references = _prepare_reference_metadata(
+            ids,
+            reference_metadata,
+            index_id=index_id,
+            city_id=city_id,
+        )
 
         index = faiss.IndexFlatIP(int(matrix.shape[1]))
         index.add(matrix)
-        metadata: dict[str, Any] = {
-            "schema_version": INDEX_SCHEMA_VERSION,
-            "built_at": datetime.now(UTC).isoformat(),
-            "index_id": index_id,
-            "city_id": city_id,
-            "gallery_size": len(ids),
-            "descriptor_dim": int(matrix.shape[1]),
-            "normalization": "L2",
-            "similarity": "cosine_via_inner_product",
-            "faiss_index_type": "IndexFlatIP",
-            "retriever": dict(retriever_metadata or {}),
-        }
-        if extra_metadata:
-            reserved = (set(metadata) | _COMMIT_METADATA_KEYS).intersection(extra_metadata)
-            if reserved:
-                raise FaissIndexError(f"extra_metadata cannot override reserved keys: {sorted(reserved)}")
-            metadata.update(dict(extra_metadata))
+        metadata = _build_metadata(
+            index_id=index_id,
+            city_id=city_id,
+            gallery_size=len(ids),
+            descriptor_dim=int(matrix.shape[1]),
+            retriever_metadata=retriever_metadata,
+            extra_metadata=extra_metadata,
+        )
         return cls(index, ids, references, metadata)
 
     @property
@@ -451,6 +517,119 @@ class FaissExactIndex:
         except Exception as exc:
             raise FaissIndexError(f"failed to load FAISS artifacts from {directory}: {exc}") from exc
         return cls(index, ids, references, metadata)
+
+
+class FaissExactIndexBuilder:
+    """One-use, bounded-memory builder for an exact normalized FAISS index.
+
+    This is deliberately separate from :class:`FaissExactIndex`: persisted and
+    serving indexes remain immutable, while an evaluation worker can append
+    small descriptor batches without materializing the complete gallery in the
+    PyTorch process or in one IPC payload.
+    """
+
+    def __init__(
+        self,
+        *,
+        descriptor_dim: int,
+        expected_size: int,
+        retriever_metadata: Mapping[str, Any] | None = None,
+        index_id: str = "default",
+        city_id: str | None = None,
+        extra_metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        try:
+            dimension = int(descriptor_dim)
+            expected = int(expected_size)
+        except (TypeError, ValueError) as exc:
+            raise FaissIndexError("descriptor_dim and expected_size must be integers") from exc
+        if dimension < 1:
+            raise FaissIndexError("descriptor_dim must be positive")
+        if expected < 1:
+            raise FaissIndexError("expected_size must be positive")
+        faiss = _import_faiss()
+        self._index = faiss.IndexFlatIP(dimension)
+        self._descriptor_dim = dimension
+        self._expected_size = expected
+        self._retriever_metadata = dict(retriever_metadata or {})
+        self._index_id = index_id
+        self._city_id = city_id
+        self._extra_metadata = dict(extra_metadata or {})
+        self._reference_ids: list[str] = []
+        self._reference_metadata: list[dict[str, Any]] = []
+        self._seen_reference_ids: set[str] = set()
+        self._finished = False
+
+    @property
+    def size(self) -> int:
+        return int(self._index.ntotal)
+
+    def add_batch(
+        self,
+        descriptors: np.ndarray,
+        reference_ids: Sequence[str],
+        *,
+        reference_metadata: Sequence[Mapping[str, Any]] | None = None,
+    ) -> None:
+        """Validate, normalize, and append one manifest-ordered descriptor batch."""
+
+        if self._finished:
+            raise FaissIndexError("cannot add descriptors after the FAISS build is finalized")
+        ids, references = _prepare_reference_rows(
+            reference_ids,
+            reference_metadata,
+            index_id=self._index_id,
+            city_id=self._city_id,
+        )
+        duplicate_ids = self._seen_reference_ids.intersection(ids)
+        if duplicate_ids:
+            raise FaissIndexError(
+                f"reference IDs must be unique across streamed batches: {sorted(duplicate_ids)[:10]}"
+            )
+        if len(self._reference_ids) + len(ids) > self._expected_size:
+            raise FaissIndexError(
+                "streamed descriptor count exceeds the declared expected_size"
+            )
+        try:
+            matrix = l2_normalize(descriptors)
+        except DescriptorError as exc:
+            raise FaissIndexError(str(exc)) from exc
+        if matrix.shape[0] != len(ids):
+            raise FaissIndexError(f"descriptor rows ({matrix.shape[0]}) do not match IDs ({len(ids)})")
+        if matrix.shape[1] != self._descriptor_dim:
+            raise FaissIndexError(
+                f"descriptor dimension ({matrix.shape[1]}) does not match builder dimension ({self._descriptor_dim})"
+            )
+        self._index.add(matrix)
+        self._reference_ids.extend(ids)
+        self._reference_metadata.extend(references)
+        self._seen_reference_ids.update(ids)
+
+    def finish(self) -> FaissExactIndex:
+        """Freeze a complete build and return normal ``FaissExactIndex`` semantics."""
+
+        if self._finished:
+            raise FaissIndexError("FAISS build is already finalized")
+        if self.size != self._expected_size:
+            raise FaissIndexError(
+                f"streamed descriptor count ({self.size}) does not match expected_size ({self._expected_size})"
+            )
+        metadata = _build_metadata(
+            index_id=self._index_id,
+            city_id=self._city_id,
+            gallery_size=self.size,
+            descriptor_dim=self._descriptor_dim,
+            retriever_metadata=self._retriever_metadata,
+            extra_metadata=self._extra_metadata,
+        )
+        index = FaissExactIndex(
+            self._index,
+            self._reference_ids,
+            self._reference_metadata,
+            metadata,
+        )
+        self._finished = True
+        return index
 
 
 def build_index_from_embedding_artifacts(

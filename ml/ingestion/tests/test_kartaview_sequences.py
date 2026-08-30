@@ -268,7 +268,11 @@ def test_run_deduplicates_photo_ids_filters_aoi_preserves_provenance_and_resumes
             [
                 response_with(
                     api_photo("photo-1", sequence_id="seq-a"),
-                    api_photo("outside", lat=56.0, sequence_id="seq-a"),
+                    # The administrative Moscow bbox reaches 56.0212°N.  Keep
+                    # this fixture genuinely outside the coarse ingestion gate;
+                    # the exact polygon is enforced when the final gallery is
+                    # published.
+                    api_photo("outside", lat=56.1, sequence_id="seq-a"),
                     {"id": "invalid", "lat": 55.75, "lng": 37.61},
                 ),
                 response_with(

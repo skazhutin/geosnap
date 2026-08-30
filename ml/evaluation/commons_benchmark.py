@@ -83,10 +83,11 @@ def _faiss_process(
     """Own FAISS in a process that never imports PyTorch (important on macOS)."""
 
     try:
-        from ml.indexing.faiss_index import FaissExactIndex
+        from ml.indexing.faiss_index import FaissExactIndex, FaissExactIndexBuilder
 
         connection.send({"kind": "booted"})
         index: FaissExactIndex | None = None
+        stream_builder: FaissExactIndexBuilder | None = None
         while True:
             request = connection.recv()
             operation = request.get("operation")
@@ -96,6 +97,8 @@ def _faiss_process(
             request_id = request.get("request_id")
             try:
                 if operation == "build":
+                    if stream_builder is not None:
+                        raise BenchmarkError("a streamed exact FAISS build is already in progress")
                     index = FaissExactIndex.build(
                         request["descriptors"],
                         request["reference_ids"],
@@ -106,6 +109,48 @@ def _faiss_process(
                         extra_metadata=extra_metadata,
                     )
                     response: dict[str, Any] = {
+                        "kind": "built",
+                        "request_id": request_id,
+                        "size": index.size,
+                        "descriptor_dim": index.descriptor_dim,
+                    }
+                elif operation == "begin_build":
+                    if stream_builder is not None:
+                        raise BenchmarkError("a streamed exact FAISS build is already in progress")
+                    stream_builder = FaissExactIndexBuilder(
+                        descriptor_dim=int(request["descriptor_dim"]),
+                        expected_size=int(request["expected_size"]),
+                        retriever_metadata=request["retriever_metadata"],
+                        index_id=index_id,
+                        city_id=city_id,
+                        extra_metadata=extra_metadata,
+                    )
+                    index = None
+                    response = {
+                        "kind": "build_started",
+                        "request_id": request_id,
+                        "descriptor_dim": int(request["descriptor_dim"]),
+                        "expected_size": int(request["expected_size"]),
+                    }
+                elif operation == "add_batch":
+                    if stream_builder is None:
+                        raise BenchmarkError("a streamed exact FAISS build has not been started")
+                    stream_builder.add_batch(
+                        request["descriptors"],
+                        request["reference_ids"],
+                        reference_metadata=request["reference_metadata"],
+                    )
+                    response = {
+                        "kind": "batch_added",
+                        "request_id": request_id,
+                        "size": stream_builder.size,
+                    }
+                elif operation == "finish_build":
+                    if stream_builder is None:
+                        raise BenchmarkError("a streamed exact FAISS build has not been started")
+                    index = stream_builder.finish()
+                    stream_builder = None
+                    response = {
                         "kind": "built",
                         "request_id": request_id,
                         "size": index.size,
@@ -169,6 +214,9 @@ class IsolatedFaissExactSearch(AbstractContextManager["IsolatedFaissExactSearch"
         self._connection: Any | None = None
         self._process: Any | None = None
         self._request_counter = 0
+        self._stream_expected_size: int | None = None
+        self._stream_added_size = 0
+        self._stream_descriptor_dim: int | None = None
 
     def __enter__(self) -> IsolatedFaissExactSearch:
         parent, child = self._context.Pipe(duplex=True)
@@ -182,6 +230,9 @@ class IsolatedFaissExactSearch(AbstractContextManager["IsolatedFaissExactSearch"
         child.close()
         self._connection = parent
         self._process = process
+        self._stream_expected_size = None
+        self._stream_added_size = 0
+        self._stream_descriptor_dim = None
         try:
             response = self._receive()
         except BaseException:
@@ -221,6 +272,8 @@ class IsolatedFaissExactSearch(AbstractContextManager["IsolatedFaissExactSearch"
         reference_metadata: Sequence[Mapping[str, Any]],
         retriever_metadata: Mapping[str, Any],
     ) -> None:
+        if self._stream_expected_size is not None:
+            raise BenchmarkError("a streamed exact FAISS build is already in progress")
         response = self._request(
             "build",
             descriptors=np.asarray(descriptors, dtype=np.float32),
@@ -230,6 +283,77 @@ class IsolatedFaissExactSearch(AbstractContextManager["IsolatedFaissExactSearch"
         )
         if response.get("kind") != "built":
             raise BenchmarkError(f"unexpected exact FAISS build response: {response}")
+
+    def begin_build(
+        self,
+        *,
+        descriptor_dim: int,
+        expected_size: int,
+        retriever_metadata: Mapping[str, Any],
+    ) -> None:
+        """Start a bounded-memory gallery build in the isolated FAISS process."""
+
+        if self._stream_expected_size is not None:
+            raise BenchmarkError("a streamed exact FAISS build is already in progress")
+        if descriptor_dim < 1:
+            raise ValueError("descriptor_dim must be positive")
+        if expected_size < 1:
+            raise ValueError("expected_size must be positive")
+        response = self._request(
+            "begin_build",
+            descriptor_dim=int(descriptor_dim),
+            expected_size=int(expected_size),
+            retriever_metadata=dict(retriever_metadata),
+        )
+        if (
+            response.get("kind") != "build_started"
+            or response.get("descriptor_dim") != int(descriptor_dim)
+            or response.get("expected_size") != int(expected_size)
+        ):
+            raise BenchmarkError(f"unexpected exact FAISS streamed-build response: {response}")
+        self._stream_expected_size = int(expected_size)
+        self._stream_added_size = 0
+        self._stream_descriptor_dim = int(descriptor_dim)
+
+    def add_batch(
+        self,
+        descriptors: np.ndarray,
+        reference_ids: Sequence[str],
+        reference_metadata: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Append one descriptor/sidecar batch and wait for the child ACK."""
+
+        if self._stream_expected_size is None:
+            raise BenchmarkError("a streamed exact FAISS build has not been started")
+        ids = [str(value) for value in reference_ids]
+        response = self._request(
+            "add_batch",
+            descriptors=np.asarray(descriptors, dtype=np.float32),
+            reference_ids=ids,
+            reference_metadata=[dict(value) for value in reference_metadata],
+        )
+        expected_size = self._stream_added_size + len(ids)
+        if response.get("kind") != "batch_added" or response.get("size") != expected_size:
+            raise BenchmarkError(f"unexpected exact FAISS streamed-batch response: {response}")
+        self._stream_added_size = expected_size
+
+    def finish_build(self) -> None:
+        """Fail closed unless every declared gallery row reached the FAISS child."""
+
+        expected_size = self._stream_expected_size
+        descriptor_dim = self._stream_descriptor_dim
+        if expected_size is None or descriptor_dim is None:
+            raise BenchmarkError("a streamed exact FAISS build has not been started")
+        response = self._request("finish_build")
+        if (
+            response.get("kind") != "built"
+            or response.get("size") != expected_size
+            or response.get("descriptor_dim") != descriptor_dim
+        ):
+            raise BenchmarkError(f"unexpected exact FAISS streamed-finish response: {response}")
+        self._stream_expected_size = None
+        self._stream_added_size = 0
+        self._stream_descriptor_dim = None
 
     def search_one(self, query: np.ndarray, *, k: int) -> list[RetrievalResult]:
         response = self._request("search", query=np.asarray(query, dtype=np.float32), k=int(k))
@@ -255,6 +379,9 @@ class IsolatedFaissExactSearch(AbstractContextManager["IsolatedFaissExactSearch"
             connection.close()
         self._process = None
         self._connection = None
+        self._stream_expected_size = None
+        self._stream_added_size = 0
+        self._stream_descriptor_dim = None
 
     def __exit__(self, *args: Any) -> None:
         self.close()

@@ -50,7 +50,19 @@ MAPILLARY_CITYWIDE_VECTOR_TILE_CACHE_MAX_AGE_SEC ?= 86400
 MAPILLARY_CITYWIDE_METADATA_CACHE_MAX_AGE_SEC ?= 3600
 DOWNLOAD_MAX_BYTES ?= 6291456
 MOSCOW_EVAL_DIR ?= $(DATA_ROOT)/evaluation/moscow_real_v1
-MOSCOW_FINAL_MANIFEST := $(DATA_ROOT)/processed/moscow/manifest_clean.parquet
+MOSCOW_RAW_DIR ?= $(DATA_ROOT)/raw/moscow
+MOSCOW_AOI_GEOJSON ?= $(DATA_ROOT)/raw/moscow/moscow_admin_boundary.geojson
+MOSCOW_AOI_STATS ?= $(DATA_ROOT)/raw/moscow/moscow_admin_boundary.stats.json
+REFRESH_MOSCOW_BOUNDARY ?= 0
+MOSCOW_SOURCE_MANIFEST ?= $(DATA_ROOT)/raw/moscow/live_manifest.parquet
+MOSCOW_PHYSICAL_MANIFEST ?= $(DATA_ROOT)/processed/moscow/live_physical_manifest.parquet
+MOSCOW_PHYSICAL_REPORT ?= $(DATA_ROOT)/processed/moscow/reports/live_physical_validation.json
+MOSCOW_SCREEN_PIPELINE_REPORT ?= $(DATA_ROOT)/processed/moscow/reports/live_physical_pipeline.json
+MOSCOW_CANONICAL_MANIFEST ?= $(DATA_ROOT)/processed/moscow/canonical_reference_gallery.parquet
+MOSCOW_CANONICAL_REPORT_JSON ?= $(DATA_ROOT)/processed/moscow/reports/canonical_reference_gallery.json
+MOSCOW_CANONICAL_REPORT_MD ?= $(DATA_ROOT)/processed/moscow/reports/canonical_reference_gallery.md
+MOSCOW_CANONICAL_MAPS_DIR ?= $(DATA_ROOT)/processed/moscow/reports/coverage_maps
+MOSCOW_FINAL_MANIFEST ?= $(DATA_ROOT)/processed/moscow/manifest_clean.parquet
 MOSCOW_GALLERY_MANIFEST := $(MOSCOW_EVAL_DIR)/gallery.parquet
 MOSCOW_CALIBRATION_MANIFEST := $(MOSCOW_EVAL_DIR)/calibration_queries.parquet
 MOSCOW_TEST_MANIFEST := $(MOSCOW_EVAL_DIR)/test_queries.parquet
@@ -87,7 +99,8 @@ KARTAVIEW_MERGE_JSON = $(if $(filter moscow,$(PROFILE)),$(KARTAVIEW_SELECTED_JSO
 RAW_MANIFEST := $(RAW_DIR)/manifest.parquet
 FINAL_MANIFEST := $(PROCESSED_DIR)/manifest_clean.parquet
 
-.PHONY: setup test ingest-sample ingest-moscow ingest-mapillary ingest-mapillary-citywide ingest-kartaview \
+.PHONY: setup test ingest-sample ingest-moscow fetch-moscow-boundary screen-moscow-images combine-moscow-gallery prepare-moscow-gallery \
+	ingest-mapillary ingest-mapillary-citywide ingest-kartaview \
 	plan-kartaview-sequences expand-kartaview-sequences select-kartaview-frames \
 	merge download prepare-data split-moscow benchmark-moscow benchmark-moscow-models \
 	calibrate-moscow-confidence benchmark-moscow-verification benchmark-moscow-test \
@@ -111,23 +124,33 @@ ingest-sample:
 
 ingest-moscow:
 	@test "$(CONFIRM_LARGE_RUN)" = "1" || { echo "Set CONFIRM_LARGE_RUN=1 after checking disk/RAM; the run is resumable but potentially large." >&2; exit 2; }
+	$(MAKE) fetch-moscow-boundary
 	$(MAKE) ingest-kartaview PROFILE=moscow \
 		KARTAVIEW_EXTRA_ARGS="--query-points-config $(MOSCOW_QUERY_POINTS_CONFIG) --limit-per-tile 150"
 	$(MAKE) plan-kartaview-sequences PROFILE=moscow
 	$(MAKE) expand-kartaview-sequences PROFILE=moscow
 	$(MAKE) select-kartaview-frames PROFILE=moscow
-	@mapillary_json="$(RAW_DIR)/.mapillary-unavailable.$$$$.json"; \
+	@mapillary_json="$(MOSCOW_RAW_DIR)/.mapillary-unavailable.$$$$.json"; \
 	if [ -n "$${MAPILLARY_ACCESS_TOKEN:-}" ]; then \
 		$(MAKE) ingest-mapillary-citywide PROFILE=moscow; \
-		mapillary_json="$(MAPILLARY_CITYWIDE_JSON)"; \
+		mapillary_json="$(MOSCOW_RAW_DIR)/mapillary_citywide_raw.json"; \
 		echo "source_status kartaview=ready mapillary=ready"; \
 	else \
 		echo "MAPILLARY_ACCESS_TOKEN is unset; continuing with KartaView only." >&2; \
 		echo "source_status kartaview=ready mapillary=skipped"; \
 	fi; \
-	$(MAKE) merge PROFILE=moscow MAPILLARY_MERGE_JSON="$$mapillary_json"
-	$(PYTHON) -c 'import sys; import pyarrow.parquet as pq; rows = pq.ParquetFile(sys.argv[1]).metadata.num_rows; print(f"merged_manifest_rows={rows}"); raise SystemExit(0 if rows > 0 else "No valid source rows were produced; refusing to download an empty Moscow dataset.")' "$(DATA_ROOT)/raw/moscow/manifest.parquet"
-	$(MAKE) download PROFILE=moscow
+	$(MAKE) merge PROFILE=moscow RAW_MANIFEST="$(MOSCOW_SOURCE_MANIFEST)" MAPILLARY_MERGE_JSON="$$mapillary_json"
+	$(PYTHON) -c 'import sys; import pyarrow.parquet as pq; rows = pq.ParquetFile(sys.argv[1]).metadata.num_rows; print(f"merged_manifest_rows={rows}"); raise SystemExit(0 if rows > 0 else "No valid source rows were produced; refusing to download an empty Moscow dataset.")' "$(MOSCOW_SOURCE_MANIFEST)"
+	$(MAKE) download PROFILE=moscow RAW_MANIFEST="$(MOSCOW_SOURCE_MANIFEST)"
+
+fetch-moscow-boundary:
+	mkdir -p "$(DATA_ROOT)/raw/moscow"
+	@if [ "$(REFRESH_MOSCOW_BOUNDARY)" != "1" ] && [ -f "$(MOSCOW_AOI_GEOJSON)" ] && [ -f "$(MOSCOW_AOI_STATS)" ]; then \
+		echo "Using pinned Moscow administrative AOI: $(MOSCOW_AOI_GEOJSON)"; \
+	else \
+		$(PYTHON) -m ml.ingestion.fetch_osm_boundary \
+			--output-geojson "$(MOSCOW_AOI_GEOJSON)" --stats "$(MOSCOW_AOI_STATS)"; \
+	fi
 
 ingest-mapillary:
 	mkdir -p "$(RAW_DIR)"
@@ -145,6 +168,7 @@ ingest-mapillary-citywide:
 		--cache-dir "$(MAPILLARY_CITYWIDE_CACHE)" \
 		--checkpoint "$(MAPILLARY_CITYWIDE_CHECKPOINT)" \
 		--stats "$(MAPILLARY_CITYWIDE_STATS)" \
+		--aoi-geojson "$(MOSCOW_AOI_GEOJSON)" \
 		--zoom "$(MAPILLARY_CITYWIDE_ZOOM)" \
 		--max-records "$(MAPILLARY_CITYWIDE_MAX_RECORDS)" \
 		--max-per-tile "$(MAPILLARY_CITYWIDE_MAX_PER_TILE)" \
@@ -243,6 +267,62 @@ prepare-data:
 		--ingestion-stats "$(RAW_DIR)/download.stats.json" \
 		--ingestion-stats "$(PROCESSED_DIR)/cleaning_report.json"
 
+# Production Moscow publication uses only the deployable Mapillary/KartaView
+# imagery that is physically present.  Screen source rows once before the
+# exact-AOI publication gate so incomplete resumable downloads cannot block the
+# usable gallery.
+$(MOSCOW_PHYSICAL_MANIFEST): $(MOSCOW_SOURCE_MANIFEST)
+	mkdir -p "$(DATA_ROOT)/processed/moscow/reports"
+	rm -f "$(DATA_ROOT)/processed/moscow/cleaning_report.json" "$(DATA_ROOT)/processed/moscow/cleaning_report.md"
+	$(PYTHON) -m ml.cleaning.clean_images --manifest "$(MOSCOW_SOURCE_MANIFEST)" \
+		--output "$(MOSCOW_PHYSICAL_MANIFEST)" --report "$(MOSCOW_PHYSICAL_REPORT)" \
+		--pipeline-report "$(MOSCOW_SCREEN_PIPELINE_REPORT)"
+
+screen-moscow-images: $(MOSCOW_PHYSICAL_MANIFEST)
+
+# The exact OSM administrative polygon is applied before quality scoring,
+# deduplication, embeddings, split generation, or API index build.
+$(MOSCOW_CANONICAL_MANIFEST): $(MOSCOW_PHYSICAL_MANIFEST) $(MOSCOW_AOI_GEOJSON)
+	@test -f "$(MOSCOW_AOI_GEOJSON)" || { echo "Missing exact Moscow AOI: $(MOSCOW_AOI_GEOJSON); run make fetch-moscow-boundary" >&2; exit 2; }
+	$(PYTHON) -m ml.ingestion.combine_reference_gallery \
+		--input-manifest "$(MOSCOW_PHYSICAL_MANIFEST)" \
+		--output-manifest "$(MOSCOW_CANONICAL_MANIFEST)" \
+		--report-json "$(MOSCOW_CANONICAL_REPORT_JSON)" \
+		--report-markdown "$(MOSCOW_CANONICAL_REPORT_MD)" \
+		--maps-dir "$(MOSCOW_CANONICAL_MAPS_DIR)" \
+		--require-images --image-base . \
+		--aoi-geojson "$(MOSCOW_AOI_GEOJSON)" --filter-outside-aoi \
+		--required-source mapillary --required-source kartaview
+
+combine-moscow-gallery: $(MOSCOW_CANONICAL_MANIFEST)
+
+prepare-moscow-gallery: combine-moscow-gallery
+	mkdir -p "$(DATA_ROOT)/processed/moscow/reports"
+	$(PYTHON) -m ml.cleaning.reporting --report "$(DATA_ROOT)/processed/moscow/cleaning_report.json" \
+		--baseline-manifest "$(MOSCOW_CANONICAL_MANIFEST)"
+	$(PYTHON) -m ml.cleaning.quality_filter --manifest "$(MOSCOW_CANONICAL_MANIFEST)" \
+		--output "$(DATA_ROOT)/processed/moscow/manifest_step2.parquet" \
+		--report "$(DATA_ROOT)/processed/moscow/reports/quality.json" \
+		--pipeline-report "$(DATA_ROOT)/processed/moscow/cleaning_report.json"
+	$(PYTHON) -m ml.cleaning.deduplicate --manifest "$(DATA_ROOT)/processed/moscow/manifest_step2.parquet" \
+		--output "$(DATA_ROOT)/processed/moscow/manifest_step3.parquet" \
+		--report "$(DATA_ROOT)/processed/moscow/reports/dedup.json" \
+		--pipeline-report "$(DATA_ROOT)/processed/moscow/cleaning_report.json"
+	$(PYTHON) -m ml.enrichment.h3_assign --manifest "$(DATA_ROOT)/processed/moscow/manifest_step3.parquet" \
+		--output "$(DATA_ROOT)/processed/moscow/manifest_step4.parquet" \
+		--report "$(DATA_ROOT)/processed/moscow/reports/h3.json"
+	$(PYTHON) -m ml.cleaning.build_final_manifest --manifest "$(DATA_ROOT)/processed/moscow/manifest_step4.parquet" \
+		--output "$(MOSCOW_FINAL_MANIFEST)" --report "$(DATA_ROOT)/processed/moscow/reports/final.json"
+	$(PYTHON) -m ml.cleaning.check_dataset --manifest "$(MOSCOW_FINAL_MANIFEST)" \
+		--report "$(DATA_ROOT)/processed/moscow/reports/dataset.json" --markdown "$(DATA_ROOT)/processed/moscow/reports/dataset.md" \
+		--scatter "$(DATA_ROOT)/processed/moscow/reports/scatter.png" --density "$(DATA_ROOT)/processed/moscow/reports/density.png" \
+		--source-comparison "$(DATA_ROOT)/processed/moscow/reports/sources.png" \
+		--preview "$(DATA_ROOT)/processed/moscow/reports/preview.jpg" \
+		--ingestion-stats "$(DATA_ROOT)/raw/moscow/kartaview.stats.json" \
+		--ingestion-stats "$(DATA_ROOT)/raw/moscow/mapillary.stats.json" \
+		--ingestion-stats "$(DATA_ROOT)/raw/moscow/live_download.stats.json" \
+		--ingestion-stats "$(DATA_ROOT)/processed/moscow/cleaning_report.json"
+
 split-moscow:
 	$(PYTHON) -m ml.evaluation.moscow_split \
 		--manifest "$(MOSCOW_FINAL_MANIFEST)" --output-dir "$(MOSCOW_EVAL_DIR)" \
@@ -261,9 +341,9 @@ benchmark-moscow:
 
 benchmark-moscow-models:
 	$(MAKE) benchmark-moscow MOSCOW_EVAL_MODEL=megaloc \
-		MOSCOW_REPORT_STEM=megaloc_moscow_real_calibration
+		MOSCOW_REPORT_STEM=megaloc_moscow_real_calibration MOSCOW_CONFIDENCE_THRESHOLD=0.0
 	$(MAKE) benchmark-moscow MOSCOW_EVAL_MODEL=dinov2-salad \
-		MOSCOW_REPORT_STEM=dinov2_salad_moscow_real_calibration
+		MOSCOW_REPORT_STEM=dinov2_salad_moscow_real_calibration MOSCOW_CONFIDENCE_THRESHOLD=0.0
 
 calibrate-moscow-confidence:
 	$(PYTHON) -m ml.evaluation.calibrate_confidence \

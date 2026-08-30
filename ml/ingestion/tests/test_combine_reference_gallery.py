@@ -136,6 +136,9 @@ def _fixture_inputs(root: Path, *, create_images: bool = False) -> list[Path]:
 
 def _run(root: Path, inputs: list[Path], **kwargs: object) -> dict[str, object]:
     kwargs.setdefault("image_base", root)
+    # Most fixture coverage intentionally exercises the optional MSLS-aware
+    # diagnostics too. Production defaults are tested separately below.
+    kwargs.setdefault("required_sources", ("mapillary", "kartaview", "msls"))
     return run(
         input_manifests=inputs,
         output_manifest=root / "combined.parquet",
@@ -221,6 +224,41 @@ def test_combines_union_schema_validates_images_and_generates_all_maps() -> None
         assert schema_types["kartaview_sequence_index"] == "int64"
         assert schema_types["msls_night"] == "bool"
         assert report["source_provenance"]["msls"]["license_counts"] == {MSLS_LICENSE: 2}
+
+
+def test_default_publication_scope_is_deployable_mapillary_and_kartaview() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        inputs = _fixture_inputs(root, create_images=True)[:2]
+        report = run(
+            input_manifests=inputs,
+            output_manifest=root / "combined.parquet",
+            report_json=root / "report.json",
+            report_markdown=root / "report.md",
+            maps_dir=root / "maps",
+            require_images=True,
+            image_base=root,
+        )
+
+        assert report["validation"]["required_sources"] == ["mapillary", "kartaview"]
+        assert set(report["source_counts"]) == {"mapillary", "kartaview"}
+        assert "msls" not in report["maps"]
+
+
+def test_default_publication_scope_rejects_accidental_msls_input() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        inputs = _fixture_inputs(root, create_images=True)
+        with pytest.raises(GalleryCombineError, match="unexpected_sources:msls"):
+            run(
+                input_manifests=inputs,
+                output_manifest=root / "combined.parquet",
+                report_json=root / "report.json",
+                report_markdown=root / "report.md",
+                maps_dir=root / "maps",
+                require_images=True,
+                image_base=root,
+            )
 
 
 def test_exact_aoi_supports_administrative_moscow_beyond_legacy_bbox() -> None:

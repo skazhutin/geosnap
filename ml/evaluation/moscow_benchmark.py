@@ -118,6 +118,18 @@ class LoadedMoscowBenchmark:
     leakage_audit: Mapping[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class GalleryBuildStats:
+    """Logical descriptor/storage facts from a materialized or streamed build."""
+
+    gallery_embedding_seconds: float
+    exact_faiss_build_ms: float
+    descriptor_dimension: int
+    descriptor_dtype: str
+    descriptor_itemsize: int
+    descriptor_storage_bytes: int
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -536,6 +548,117 @@ def _reference_metadata(row: ManifestRow) -> dict[str, Any]:
         "h3_fine": values.get("h3_fine"),
         "computed_image_sha256": row.image_sha256,
     }
+
+
+def _streamed_build_methods(exact_search: ExactSearch) -> tuple[Callable[..., Any], ...] | None:
+    """Return the optional bounded-build lifecycle offered by the FAISS worker."""
+
+    methods = tuple(
+        getattr(exact_search, name, None)
+        for name in ("begin_build", "add_batch", "finish_build")
+    )
+    return methods if all(callable(method) for method in methods) else None
+
+
+def _build_gallery_search(
+    *,
+    gallery_rows: Sequence[ManifestRow],
+    retriever: BaseRetriever,
+    exact_search: ExactSearch,
+    model_metadata: Mapping[str, Any],
+) -> GalleryBuildStats:
+    """Embed the gallery without retaining a full descriptor matrix when supported.
+
+    ``IsolatedFaissExactSearch`` acknowledges every append, which bounds the
+    Torch-side matrix and the IPC payload to one model batch.  The legacy
+    fallback intentionally preserves the existing injected test/custom-search
+    contract.
+    """
+
+    streamed_methods = _streamed_build_methods(exact_search)
+    expected_dimension = int(model_metadata["descriptor_dim"])
+    if streamed_methods is None:
+        gallery_paths = [row.image_path for row in gallery_rows]
+        started = time.perf_counter()
+        gallery_descriptors = retriever.embed_batch(gallery_paths)
+        gallery_descriptors = retriever.validate_descriptors(
+            gallery_descriptors,
+            expected_rows=len(gallery_paths),
+            normalize=True,
+        )
+        gallery_embedding_seconds = time.perf_counter() - started
+        if gallery_descriptors.shape[1] != expected_dimension:
+            raise MoscowBenchmarkError(
+                "gallery descriptor dimension does not match loaded model metadata"
+            )
+        started = time.perf_counter()
+        exact_search.build(
+            gallery_descriptors,
+            [row.reference_id for row in gallery_rows],
+            [_reference_metadata(row) for row in gallery_rows],
+            model_metadata,
+        )
+        return GalleryBuildStats(
+            gallery_embedding_seconds=gallery_embedding_seconds,
+            exact_faiss_build_ms=(time.perf_counter() - started) * 1000.0,
+            descriptor_dimension=int(gallery_descriptors.shape[1]),
+            descriptor_dtype=str(gallery_descriptors.dtype),
+            descriptor_itemsize=int(gallery_descriptors.dtype.itemsize),
+            descriptor_storage_bytes=int(gallery_descriptors.nbytes),
+        )
+
+    begin_build, add_batch, finish_build = streamed_methods
+    try:
+        batch_size = int(getattr(retriever, "batch_size", 1))
+    except (TypeError, ValueError) as exc:
+        raise MoscowBenchmarkError("retriever batch_size must be a positive integer") from exc
+    if batch_size < 1:
+        raise MoscowBenchmarkError("retriever batch_size must be a positive integer")
+
+    exact_faiss_build_ms = 0.0
+    started = time.perf_counter()
+    begin_build(
+        descriptor_dim=expected_dimension,
+        expected_size=len(gallery_rows),
+        retriever_metadata=model_metadata,
+    )
+    exact_faiss_build_ms += (time.perf_counter() - started) * 1000.0
+    gallery_embedding_seconds = 0.0
+    descriptor_dtype = np.dtype(np.float32)
+    for start in range(0, len(gallery_rows), batch_size):
+        batch = gallery_rows[start : start + batch_size]
+        started = time.perf_counter()
+        descriptors = retriever.embed_batch([row.image_path for row in batch])
+        descriptors = retriever.validate_descriptors(
+            descriptors,
+            expected_rows=len(batch),
+            normalize=True,
+        )
+        gallery_embedding_seconds += time.perf_counter() - started
+        if descriptors.shape[1] != expected_dimension:
+            raise MoscowBenchmarkError(
+                "gallery descriptor dimension does not match loaded model metadata"
+            )
+        descriptor_dtype = descriptors.dtype
+        started = time.perf_counter()
+        add_batch(
+            descriptors,
+            [row.reference_id for row in batch],
+            [_reference_metadata(row) for row in batch],
+        )
+        exact_faiss_build_ms += (time.perf_counter() - started) * 1000.0
+    started = time.perf_counter()
+    finish_build()
+    exact_faiss_build_ms += (time.perf_counter() - started) * 1000.0
+    descriptor_itemsize = int(descriptor_dtype.itemsize)
+    return GalleryBuildStats(
+        gallery_embedding_seconds=gallery_embedding_seconds,
+        exact_faiss_build_ms=exact_faiss_build_ms,
+        descriptor_dimension=expected_dimension,
+        descriptor_dtype=str(descriptor_dtype),
+        descriptor_itemsize=descriptor_itemsize,
+        descriptor_storage_bytes=len(gallery_rows) * expected_dimension * descriptor_itemsize,
+    )
 
 
 def _observation(row: ManifestRow, result: Any) -> LocalizationObservation:
@@ -1072,29 +1195,15 @@ def run_moscow_benchmark(
         model_load_ms = (time.perf_counter() - started) * 1000.0
         model_metadata = _retriever_metadata(retriever)
 
-        gallery_paths = [row.image_path for row in loaded.gallery.rows]
-        started = time.perf_counter()
-        gallery_descriptors = retriever.embed_batch(gallery_paths)
-        gallery_descriptors = retriever.validate_descriptors(
-            gallery_descriptors,
-            expected_rows=len(gallery_paths),
-            normalize=True,
+        gallery_build = _build_gallery_search(
+            gallery_rows=loaded.gallery.rows,
+            retriever=retriever,
+            exact_search=exact_search,
+            model_metadata=model_metadata,
         )
-        gallery_embedding_seconds = time.perf_counter() - started
+        gallery_embedding_seconds = gallery_build.gallery_embedding_seconds
         gallery_embedding_ms = gallery_embedding_seconds * 1000.0
-        if gallery_descriptors.shape[1] != int(model_metadata["descriptor_dim"]):
-            raise MoscowBenchmarkError(
-                "gallery descriptor dimension does not match loaded model metadata"
-            )
-
-        started = time.perf_counter()
-        exact_search.build(
-            gallery_descriptors,
-            [row.reference_id for row in loaded.gallery.rows],
-            [_reference_metadata(row) for row in loaded.gallery.rows],
-            model_metadata,
-        )
-        exact_faiss_build_ms = (time.perf_counter() - started) * 1000.0
+        exact_faiss_build_ms = gallery_build.exact_faiss_build_ms
 
         for query in loaded.queries.rows:
             values = query.values
@@ -1178,8 +1287,8 @@ def run_moscow_benchmark(
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    descriptor_dimension = int(gallery_descriptors.shape[1])
-    descriptor_itemsize = int(gallery_descriptors.dtype.itemsize)
+    descriptor_dimension = gallery_build.descriptor_dimension
+    descriptor_itemsize = gallery_build.descriptor_itemsize
     payload: dict[str, Any] = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "benchmark_kind": BENCHMARK_KIND,
@@ -1197,12 +1306,12 @@ def run_moscow_benchmark(
             "gallery_embedding_ms": gallery_embedding_ms,
             "exact_faiss_build_ms": exact_faiss_build_ms,
             "descriptor_dimension": descriptor_dimension,
-            "descriptor_dtype": str(gallery_descriptors.dtype),
-            "gallery_descriptor_storage_bytes": int(gallery_descriptors.nbytes),
+            "descriptor_dtype": gallery_build.descriptor_dtype,
+            "gallery_descriptor_storage_bytes": gallery_build.descriptor_storage_bytes,
             "query_descriptor_storage_bytes": (
                 len(loaded.queries.rows) * descriptor_dimension * descriptor_itemsize
             ),
-            "exact_faiss_vector_storage_bytes": int(gallery_descriptors.nbytes),
+            "exact_faiss_vector_storage_bytes": gallery_build.descriptor_storage_bytes,
             "exact_search_backend": "faiss.IndexFlatIP (L2-normalized descriptors, isolated process)",
             "environment": {
                 "platform": platform.platform(),

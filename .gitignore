@@ -21,6 +21,7 @@ model_cache/
 # Downloaded or generated data (small checked-in fixtures stay under tests/)
 data/raw/**
 !data/raw/.gitkeep
+data/citywide/
 data/processed/**
 !data/processed/.gitkeep
 data/embeddings/**

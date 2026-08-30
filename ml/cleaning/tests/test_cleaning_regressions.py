@@ -12,7 +12,11 @@ from ml.cleaning.clean_images import run as clean_run
 from ml.cleaning.deduplicate import _cluster_geo
 from ml.cleaning.deduplicate import run as dedup_run
 from ml.cleaning.quality_filter import run as quality_run
-from ml.cleaning.reporting import update_cleaning_report
+from ml.cleaning.reporting import (
+    initialize_cleaning_report_from_manifest,
+    rebase_cleaning_report_from_manifest,
+    update_cleaning_report,
+)
 from ml.ingestion.schema import CANONICAL_COLUMNS, canonical_record, manifest_dataframe, read_manifest, write_manifest
 
 
@@ -214,6 +218,49 @@ class CleaningRegressionTests(unittest.TestCase):
             self.assertEqual(result["removed_quality"], 11)
             self.assertEqual(result["removed_dedup"], 8)
             self.assertTrue(path.with_suffix(".md").is_file())
+
+    def test_exact_aoi_baseline_does_not_become_a_quality_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "image.jpg"
+            _pattern_image(image, 10)
+            manifest = root / "canonical.parquet"
+            write_manifest(manifest_dataframe([_record("baseline", image)]), manifest)
+
+            result = initialize_cleaning_report_from_manifest(root / "report.json", manifest)
+
+            self.assertEqual(result["before_clean"], 1)
+            self.assertEqual(result["after_clean"], 1)
+            self.assertIsNone(result["removed_quality"])
+
+    def test_rebase_preserves_completed_quality_and_dedup_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "image.jpg"
+            _pattern_image(image, 11)
+            manifest = root / "canonical.parquet"
+            write_manifest(
+                manifest_dataframe([_record(f"baseline-{index}", image) for index in range(100)]),
+                manifest,
+            )
+            report = root / "report.json"
+            update_cleaning_report(
+                report,
+                before_clean=100,
+                after_clean=90,
+                after_quality=80,
+                after_dedup=70,
+            )
+
+            result = rebase_cleaning_report_from_manifest(report, manifest)
+
+            self.assertEqual(result["before_clean"], 100)
+            self.assertEqual(result["after_clean"], 100)
+            self.assertEqual(result["after_quality"], 80)
+            self.assertEqual(result["after_dedup"], 70)
+            self.assertEqual(result["removed_clean"], 0)
+            self.assertEqual(result["removed_quality"], 20)
+            self.assertEqual(result["removed_dedup"], 10)
 
 
 if __name__ == "__main__":

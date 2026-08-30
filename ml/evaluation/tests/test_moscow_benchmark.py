@@ -94,6 +94,75 @@ class _NumpyExactSearch:
         ]
 
 
+class _StreamingNumpyExactSearch(_NumpyExactSearch):
+    """Fixture search that exposes the optional bounded gallery-build protocol."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.expected_size: int | None = None
+        self.descriptor_dim: int | None = None
+        self._descriptor_batches: list[np.ndarray] = []
+        self.batch_sizes: list[int] = []
+        self.finished = False
+
+    def begin_build(
+        self,
+        *,
+        descriptor_dim: int,
+        expected_size: int,
+        retriever_metadata: Mapping[str, Any],
+    ) -> None:
+        del retriever_metadata
+        assert self.expected_size is None
+        self.descriptor_dim = descriptor_dim
+        self.expected_size = expected_size
+
+    def add_batch(
+        self,
+        descriptors: np.ndarray,
+        reference_ids: Sequence[str],
+        reference_metadata: Sequence[Mapping[str, Any]],
+    ) -> None:
+        assert self.expected_size is not None
+        assert self.descriptor_dim is not None
+        matrix = l2_normalize(descriptors)
+        assert matrix.shape == (len(reference_ids), self.descriptor_dim)
+        self._descriptor_batches.append(matrix)
+        self.batch_sizes.append(len(reference_ids))
+        self.ids.extend(str(reference_id) for reference_id in reference_ids)
+        self.metadata.extend(dict(row) | {"index_id": "fixture"} for row in reference_metadata)
+
+    def finish_build(self) -> None:
+        assert self.expected_size is not None
+        assert len(self.ids) == self.expected_size
+        self.descriptors = np.concatenate(self._descriptor_batches, axis=0)
+        self.finished = True
+
+    def build(
+        self,
+        descriptors: np.ndarray,
+        reference_ids: Sequence[str],
+        reference_metadata: Sequence[Mapping[str, Any]],
+        retriever_metadata: Mapping[str, Any],
+    ) -> None:
+        raise AssertionError("streaming-capable search must not receive a materialized gallery")
+
+    def search_one(self, query: np.ndarray, *, k: int) -> list[RetrievalResult]:
+        assert self.finished
+        return super().search_one(query, k=k)
+
+
+class _TrackingMockRetriever(_MockRetriever):
+    def __init__(self, *, batch_size: int) -> None:
+        super().__init__()
+        self.batch_size = batch_size
+        self.embed_batch_sizes: list[int] = []
+
+    def embed_batch(self, images: Sequence[ImageInput]) -> np.ndarray:
+        self.embed_batch_sizes.append(len(images))
+        return super().embed_batch(images)
+
+
 def _write_image(path: Path, color: tuple[int, int, int]) -> str:
     Image.new("RGB", (96, 64), color).save(path, format="PNG")
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -253,6 +322,48 @@ def test_default_backend_runs_process_isolated_exact_faiss_without_network(tmp_p
 
     assert payload["primary"]["retrieval"]["recall_at"]["10"] == 1.0
     assert payload["runtime"]["exact_search_backend"].endswith("isolated process)")
+
+
+def test_streamed_gallery_build_keeps_batches_bounded_and_preserves_metrics(tmp_path: Path) -> None:
+    gallery_path, query_path = _write_fixture(tmp_path)
+    legacy_payload, _, _ = run_moscow_benchmark(
+        gallery_manifest_path=gallery_path,
+        query_manifest_path=query_path,
+        retriever=_MockRetriever(),
+        output_dir=tmp_path / "legacy-reports",
+        top_k=10,
+        confidence_threshold=0.0,
+        search_factory=_NumpyExactSearch,
+    )
+    searches: list[_StreamingNumpyExactSearch] = []
+
+    def streaming_factory() -> _StreamingNumpyExactSearch:
+        search = _StreamingNumpyExactSearch()
+        searches.append(search)
+        return search
+
+    retriever = _TrackingMockRetriever(batch_size=3)
+    streamed_payload, _, _ = run_moscow_benchmark(
+        gallery_manifest_path=gallery_path,
+        query_manifest_path=query_path,
+        retriever=retriever,
+        output_dir=tmp_path / "streamed-reports",
+        top_k=10,
+        confidence_threshold=0.0,
+        search_factory=streaming_factory,
+    )
+
+    assert len(searches) == 1
+    assert searches[0].batch_sizes == [3, 3, 3, 1]
+    assert max(retriever.embed_batch_sizes) == 3
+    assert all(size < 10 for size in retriever.embed_batch_sizes)
+    assert streamed_payload["primary"]["retrieval"] == legacy_payload["primary"]["retrieval"]
+    assert streamed_payload["primary"]["localization"] == legacy_payload["primary"]["localization"]
+    assert [row["matches"] for row in streamed_payload["per_query"]] == [
+        row["matches"] for row in legacy_payload["per_query"]
+    ]
+    assert streamed_payload["runtime"]["gallery_descriptor_storage_bytes"] == 10 * 3 * 4
+    assert streamed_payload["runtime"]["exact_faiss_vector_storage_bytes"] == 10 * 3 * 4
 
 
 def test_robustness_derivatives_are_separate_from_primary_denominator(tmp_path: Path) -> None:
