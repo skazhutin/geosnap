@@ -952,25 +952,20 @@ def run_moscow_verification_ablation(
         model_load_ms = (time.perf_counter() - started) * 1000.0
         model_metadata = moscow_benchmark._retriever_metadata(retriever)
 
-        gallery_paths = [row.image_path for row in loaded.gallery.rows]
-        started = time.perf_counter()
-        gallery_descriptors = retriever.embed_batch(gallery_paths)
-        gallery_descriptors = retriever.validate_descriptors(
-            gallery_descriptors,
-            expected_rows=len(gallery_paths),
-            normalize=True,
+        # Reuse the primary Moscow benchmark's optional lifecycle: the
+        # default isolated FAISS worker ACKs each model-sized append, so this
+        # process never retains (or sends) the complete gallery descriptor
+        # matrix. Custom/legacy injected searches retain their one-shot
+        # contract for test and extension compatibility.
+        gallery_build = moscow_benchmark._build_gallery_search(
+            gallery_rows=loaded.gallery.rows,
+            retriever=retriever,
+            exact_search=exact_search,
+            model_metadata=model_metadata,
         )
-        gallery_embedding_seconds = time.perf_counter() - started
+        gallery_embedding_seconds = gallery_build.gallery_embedding_seconds
         gallery_embedding_ms = gallery_embedding_seconds * 1000.0
-
-        started = time.perf_counter()
-        exact_search.build(
-            gallery_descriptors,
-            [row.reference_id for row in loaded.gallery.rows],
-            [moscow_benchmark._reference_metadata(row) for row in loaded.gallery.rows],
-            model_metadata,
-        )
-        exact_faiss_build_ms = (time.perf_counter() - started) * 1000.0
+        exact_faiss_build_ms = gallery_build.exact_faiss_build_ms
 
         for query in selected_queries:
             query_id = query.reference_id
@@ -1224,8 +1219,8 @@ def run_moscow_verification_ablation(
             "utf-8"
         )
     ).hexdigest()
-    descriptor_dimension = int(gallery_descriptors.shape[1])
-    descriptor_itemsize = int(gallery_descriptors.dtype.itemsize)
+    descriptor_dimension = gallery_build.descriptor_dimension
+    descriptor_itemsize = gallery_build.descriptor_itemsize
     payload: dict[str, Any] = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "benchmark_kind": ABLATION_KIND,
@@ -1304,12 +1299,12 @@ def run_moscow_verification_ablation(
             "gallery_embedding_ms": gallery_embedding_ms,
             "exact_faiss_build_ms": exact_faiss_build_ms,
             "descriptor_dimension": descriptor_dimension,
-            "descriptor_dtype": str(gallery_descriptors.dtype),
-            "gallery_descriptor_storage_bytes": int(gallery_descriptors.nbytes),
+            "descriptor_dtype": gallery_build.descriptor_dtype,
+            "gallery_descriptor_storage_bytes": gallery_build.descriptor_storage_bytes,
             "selected_query_descriptor_storage_bytes": (
                 len(selected_queries) * descriptor_dimension * descriptor_itemsize
             ),
-            "exact_faiss_vector_storage_bytes": int(gallery_descriptors.nbytes),
+            "exact_faiss_vector_storage_bytes": gallery_build.descriptor_storage_bytes,
             "exact_search_backend": (
                 "faiss.IndexFlatIP (L2-normalized descriptors, isolated process by default)"
             ),

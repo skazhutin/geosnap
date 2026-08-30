@@ -108,6 +108,65 @@ class _NumpyExactSearch:
         ]
 
 
+class _StreamingNumpyExactSearch(_NumpyExactSearch):
+    """Fixture search exposing the optional bounded gallery-build lifecycle."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.expected_size: int | None = None
+        self.descriptor_dim: int | None = None
+        self._descriptor_batches: list[np.ndarray] = []
+        self.batch_sizes: list[int] = []
+        self.finished = False
+
+    def begin_build(
+        self,
+        *,
+        descriptor_dim: int,
+        expected_size: int,
+        retriever_metadata: Mapping[str, Any],
+    ) -> None:
+        del retriever_metadata
+        assert self.expected_size is None
+        self.descriptor_dim = descriptor_dim
+        self.expected_size = expected_size
+
+    def add_batch(
+        self,
+        descriptors: np.ndarray,
+        reference_ids: Sequence[str],
+        reference_metadata: Sequence[Mapping[str, Any]],
+    ) -> None:
+        assert self.expected_size is not None
+        assert self.descriptor_dim is not None
+        matrix = l2_normalize(descriptors)
+        assert matrix.shape == (len(reference_ids), self.descriptor_dim)
+        self._descriptor_batches.append(matrix)
+        self.batch_sizes.append(len(reference_ids))
+        self.ids.extend(str(reference_id) for reference_id in reference_ids)
+        self.metadata.extend(dict(row) for row in reference_metadata)
+
+    def finish_build(self) -> None:
+        assert self.expected_size is not None
+        assert len(self.ids) == self.expected_size
+        self.descriptors = np.concatenate(self._descriptor_batches, axis=0)
+        self.finished = True
+
+    def build(
+        self,
+        descriptors: np.ndarray,
+        reference_ids: Sequence[str],
+        reference_metadata: Sequence[Mapping[str, Any]],
+        retriever_metadata: Mapping[str, Any],
+    ) -> None:
+        del descriptors, reference_ids, reference_metadata, retriever_metadata
+        raise AssertionError("streaming-capable search must not receive a materialized gallery")
+
+    def search_one(self, query: np.ndarray, *, k: int) -> list[RetrievalResult]:
+        assert self.finished
+        return super().search_one(query, k=k)
+
+
 class _FixtureReranker:
     def __init__(self, config: VerificationConfig) -> None:
         self.config = config
@@ -394,6 +453,65 @@ def test_real_moscow_ablation_reports_both_arms_and_reuses_embeddings(tmp_path: 
     assert "Primary geographic metrics" in markdown
     assert "False-confident errors" in markdown
     assert "Verification overhead" in markdown
+
+
+def test_streamed_gallery_build_keeps_verification_batches_bounded(tmp_path: Path) -> None:
+    gallery_path, query_path = _write_fixture(tmp_path)
+    config = _config()
+    legacy_payload, _, _ = run_moscow_verification_ablation(
+        gallery_manifest_path=gallery_path,
+        query_manifest_path=query_path,
+        retriever=_TrackingRetriever(),
+        output_dir=tmp_path / "legacy-reports",
+        confidence_threshold=0.0,
+        verification_config=config,
+        search_factory=_NumpyExactSearch,
+        localizer=_localizer(),
+        reranker=_FixtureReranker(config),
+    )
+    searches: list[_StreamingNumpyExactSearch] = []
+
+    def streaming_factory() -> _StreamingNumpyExactSearch:
+        search = _StreamingNumpyExactSearch()
+        searches.append(search)
+        return search
+
+    retriever = _TrackingRetriever()
+    retriever.batch_size = 3
+    streamed_payload, _, _ = run_moscow_verification_ablation(
+        gallery_manifest_path=gallery_path,
+        query_manifest_path=query_path,
+        retriever=retriever,
+        output_dir=tmp_path / "streamed-reports",
+        confidence_threshold=0.0,
+        verification_config=config,
+        search_factory=streaming_factory,
+        localizer=_localizer(),
+        reranker=_FixtureReranker(config),
+    )
+
+    assert len(searches) == 1
+    assert searches[0].batch_sizes == [3, 3, 3, 1]
+    assert retriever.embed_batch_sizes[:4] == [3, 3, 3, 1]
+    assert max(retriever.embed_batch_sizes) == 3
+    for arm in ("retrieval_only", "retrieval_plus_verification"):
+        for metric in (
+            "retrieval",
+            "localization",
+            "confidence_buckets",
+            "false_confident_errors",
+        ):
+            assert streamed_payload["arms"][arm][metric] == legacy_payload["arms"][arm][metric]
+    assert [row["retrieval_only"]["matches"] for row in streamed_payload["per_query"]] == [
+        row["retrieval_only"]["matches"] for row in legacy_payload["per_query"]
+    ]
+    assert [
+        row["retrieval_plus_verification"]["matches"] for row in streamed_payload["per_query"]
+    ] == [
+        row["retrieval_plus_verification"]["matches"] for row in legacy_payload["per_query"]
+    ]
+    assert streamed_payload["runtime"]["gallery_descriptor_storage_bytes"] == 10 * 3 * 4
+    assert streamed_payload["runtime"]["exact_faiss_vector_storage_bytes"] == 10 * 3 * 4
 
 
 def test_query_bound_is_deterministic_and_area_balanced(tmp_path: Path) -> None:
