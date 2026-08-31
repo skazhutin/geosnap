@@ -330,6 +330,42 @@ class EmbeddingJob:
         )
         return ids, matrix, failures
 
+    def _completed_artifacts_for_signature(self, signature: str) -> EmbeddingArtifacts | None:
+        """Reuse a committed generation after its resumability chunks are pruned.
+
+        A completed artifact remains the authoritative result for the exact
+        ordered manifest/model signature.  We still validate it through the
+        normal artifact loader instead of treating the commit metadata as a
+        blind cache hit.
+        """
+
+        metadata_path = self.output_dir / "build_metadata.json"
+        if not metadata_path.is_file():
+            return None
+        try:
+            raw_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise EmbeddingJobError("embedding build metadata is missing or invalid") from exc
+        if not isinstance(raw_metadata, dict) or raw_metadata.get("status") != "complete":
+            return None
+        if raw_metadata.get("input_signature") != signature:
+            raise EmbeddingJobError(
+                "existing embedding artifact belongs to a different ordered manifest/model; "
+                "use a new output directory or run with resume=False"
+            )
+
+        _, ids, _, metadata = load_embedding_artifacts(self.output_dir)
+        return EmbeddingArtifacts(
+            root=self.output_dir,
+            descriptors_path=self.output_dir / "descriptors.npy",
+            id_mapping_path=self.output_dir / "id_mapping.json",
+            reference_metadata_path=self.output_dir / "reference_metadata.jsonl",
+            build_metadata_path=metadata_path,
+            failures_path=self.output_dir / "failures.jsonl",
+            descriptor_count=len(ids),
+            failure_count=int(metadata["failure_count"]),
+        )
+
     def _save_chunk(self, number: int, ids: Sequence[str], descriptors: np.ndarray) -> str:
         name = f"chunk-{number:08d}.npz"
         path = self._checkpoint_dir / name
@@ -495,6 +531,17 @@ class EmbeddingJob:
             if isinstance(exc, EmbeddingJobError):
                 raise
             raise EmbeddingJobError(f"failed to commit embedding artifacts: {type(exc).__name__}") from exc
+
+        # The metadata commit above makes the checkpoint chunks redundant.
+        # Retaining them would roughly double descriptor storage for a completed
+        # gallery, while failed or interrupted jobs keep them for safe resume.
+        # Cleanup is deliberately best-effort: a valid committed generation must
+        # remain usable even if the filesystem refuses this space reclamation.
+        try:
+            shutil.rmtree(self._checkpoint_dir)
+            _fsync_directory(self.output_dir)
+        except OSError as exc:
+            logger.warning("unable to remove completed embedding checkpoints: %s", exc)
         return EmbeddingArtifacts(
             root=self.output_dir,
             descriptors_path=descriptors_path,
@@ -521,6 +568,10 @@ class EmbeddingJob:
 
         self.retriever.load()  # exactly once; model implementations are idempotent
         signature = _input_signature(records, self.retriever)
+        if resume:
+            completed = self._completed_artifacts_for_signature(signature)
+            if completed is not None:
+                return completed
         state = self._load_or_create_state(signature, len(records), resume=resume)
         next_index = int(state["next_input_index"])
         if not 0 <= next_index <= len(records):

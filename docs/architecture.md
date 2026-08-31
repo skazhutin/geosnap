@@ -1,8 +1,30 @@
 # Архитектура GeoSnap
 
-Актуально на 2026-08-15. Этот документ описывает реализованную архитектуру,
-а не целевую точность продукта. Текущий объём уличной московской галереи
-недостаточен для заявления о покрытии Москвы или для калибровки уверенности.
+Актуально на 2026-08-31. Этот документ описывает реализованную архитектуру и
+границы данных, а не обещанную точность продукта. Production gallery имеет
+реальные Mapillary/KartaView references, но измеренное покрытие остаётся
+частичным. Current selection (`megaloc` + weighted medoid +
+`0.5548002022369389`) прошёл real calibration и единственный frozen held-out
+test; результаты и существенные ограничения — в [evaluation_report.md](evaluation_report.md).
+
+## Граница production данных
+
+Единственный допустимый вход в deployable Moscow reference gallery —
+физически сохранённые изображения Mapillary и KartaView. Перед cleaning
+применяется exact OSM administrative AOI: relation `102269`, `MultiPolygon` из
+10 компонентов, SHA-256
+`33b5dbf852cb94e5292e7848974fba78641dd76339cad142e73b7419b5db4a8a`.
+
+Текущий canonical exact-AOI manifest содержит 23 014 references (16 528
+Mapillary, 6 486 KartaView); final manifest после quality/dedup — 22 830
+(16 504 / 6 326). В fixed 20×20 grid заняты 87 из 400 cells (21,75 %), поэтому
+`city_id=moscow` обозначает область данных, а не гарантию локализации в любой
+точке города.
+
+MSLS, Wikimedia Commons и любые другие benchmark/training datasets разрешены
+только в research/evaluation workflow. Они не могут быть объединены с
+canonical manifest, embedded в production descriptors или добавлены в Moscow
+FAISS index.
 
 ## Принцип
 
@@ -141,43 +163,61 @@ orientation и RGB conversion.
 - оставляет `uncertainty_radius_m = null`, пока нет отдельной калибровки на
   leakage-resistant московском наборе.
 
-Текущая confidence-функция помечена `interpretable-v1-uncalibrated`.
-Пороговые значения являются инженерными defaults, а не подтверждённой
-вероятностью правильного ответа.
+Текущая confidence-функция помечена `interpretable-v1-uncalibrated`: её число
+не является калиброванной вероятностью. Но operating threshold для текущего
+Moscow index был честно выбран на calibration split: MegaLoc + weighted medoid
+использует `CONFIDENCE_THRESHOLD=0.5548002022369389`, что минимизировало
+false-confident errors >100 м до нуля перед максимизацией полезного ответа.
+Service не загружает calibration report неявно; deployment должен передать тот
+же порог явно. `uncertainty_radius_m` остаётся `null` до отдельной uncertainty
+calibration.
 
 API не возвращает абсолютные пути, download URL, токены или stack traces.
 Thumbnail разрешается сервером по `reference_id` из доверенного index sidecar;
 атрибуция возвращается для каждого отображаемого совпадения. Полный перечень
 лицензий и ограничений находится в [лицензионном аудите](licenses.md).
 
-## Фактически проверенные модели
+## Модели и protocol выбора
 
-Оба production adapter были загружены из официальных pinned checkpoint и
-реально выполнены на Apple M1 Pro/MPS. Помимо execution smokes, они прошли один
-и тот же content-pinned Moscow Commons proxy (12 gallery / 8 query). Это всё
-ещё tiny landmark-biased, non-street-view оценка, а не production accuracy.
+MegaLoc и DINOv2+SALAD имеют официальные pinned checkpoint-backed adapters и
+строят конечные L2-normalized descriptors размерности 8 448. На current real
+Moscow calibration SALAD выиграл raw retrieval, однако после safety-first
+confidence calibration MegaLoc дал больше correct accepted answers и лучший
+accepted-error tail. Поэтому **только для этого Moscow bundle** выбран
+`RETRIEVER=megaloc`; это не утверждение о превосходстве в других городах или
+на любом unthresholded metric. Лицензии, pin и redistribution consequences
+описаны в [licenses.md](licenses.md).
 
-| Adapter | Закреплённые ревизии | Descriptor | Proxy R@1/5/10 | Median offline query |
-|---|---|---:|---:|---:|
-| MegaLoc | repo `5fe0dd697c4a70ba3e23607f6716ab3c606b16db`; checkpoint `37bb43d65dd6388d1578052de5eb0bcdceb497e7` | 8 448, finite, L2 | 87.5/100/100% | 72.78 ms |
-| DINOv2 + SALAD | SALAD `6aede13a3f6c25750bf7fde10209c06cb73060bb`; DINOv2 `7764ea0f912e53c92e82eb78a2a1631e92725fc8` | 8 448, finite, L2 | 87.5/100/100% | 70.65 ms |
+Production retriever выбирается только следующим порядком:
 
-В конфигурации sample/API инженерным default остаётся `RETRIEVER=megaloc`.
-Это не заявление, что MegaLoc точнее: имеющийся landmark-biased Commons proxy
-не заменяет репрезентативный cross-sequence/cross-time Moscow street-view
-benchmark и сам по себе не может выбрать production retriever.
+1. `make split-moscow` публикует disjoint Mapillary/KartaView
+   gallery/calibration/test manifests с sequence, ID/source-ID, SHA-256 и pHash
+   leakage checks.
+2. Оба retriever запускаются на **calibration** queries с threshold `0.0`.
+3. Из выбранного calibration report создаётся confidence threshold; затем
+   retriever, estimator и threshold замораживаются.
+4. `CONFIRM_FINAL_TEST=1 make benchmark-moscow-test` открывает held-out test
+   только для окончательного измерения.
+5. `make index-moscow-gallery` embeds и индексирует только gallery split.
+
+Commons proxy и MSLS-derived benchmarks не могут выбрать production model:
+первый — hand-curated landmark-biased proxy, второй — внешний benchmark/training
+corpus, а оба не являются Mapillary/KartaView Moscow deployment data.
 
 ## Текущие границы готовности
 
-- Реальный однокадровый Moscow KartaView pipeline, MegaLoc embedding и
-  однострочный FAISS index сохранены и проверяют связность стадий, но не
-  retrieval accuracy и не покрытие города; числа приведены в
-  [отчёте о данных](data_report.md).
-- Live Mapillary ingestion не выполнялся без пользовательского access token.
-- Более широкий KartaView probe показал sparse/нестабильный ответ API и только
-  три финально пригодных изображения в одной ячейке контрольной сетки.
-- OpenCV SIFT verification на том же proxy не изменила Recall/top-1, снизила
-  answer rate с 75% до 12.5% и добавила около 631 ms median offline latency;
-  она остаётся opt-in/default-off.
-- Уверенность и радиус неопределённости нельзя считать калиброванными до
-  появления достаточной leakage-resistant street-view оценки.
+- Реальная two-source canonical gallery содержит 23 014, final gallery —
+  22 830 references; подробности — в [отчёте о данных](data_report.md).
+- Готовый real split содержит 18 821 gallery rows, 493 calibration queries и
+  507 held-out test queries. Он не означает full-city coverage: заняты лишь 87
+  из 400 fixed-grid cells.
+- OpenCV SIFT/LightGlue-compatible verification остаётся optional/default-off:
+  real 100-query ablation дала нулевой all-query accuracy gain и median
+  overhead +1 002 мс. Evidence и ограничения — в
+  [verification_report.md](verification_report.md).
+- `uncertainty_radius_m` нельзя считать калиброванным только из confidence
+  threshold; оно остаётся `null`, пока не появится отдельная проверенная
+  uncertainty calibration.
+- Docker Compose configuration может быть проверена статически, но container
+  runtime на текущем host не подтверждён: Docker daemon недоступен. Перед
+  deployment обязателен `/ready` и настоящий `/localize` smoke на host с daemon.

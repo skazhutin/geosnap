@@ -1,186 +1,175 @@
 # Отчёт о реальных данных Москвы
 
-Актуально на 2026-08-15. Здесь отдельно приведены (1) сохраняемый в репозитории
-воспроизводимый sample и (2) более широкий временный live probe. Эти результаты
-подтверждают работу pipeline, но **не подтверждают покрытие Москвы и не дают
-оценки точности геолокации**.
+Актуально на 2026-08-31. Этот документ описывает фактически подготовленную
+двухисточниковую reference gallery и её измеренные границы. Выбор VPR-модели и
+один frozen held-out test завершены по описанному ниже protocol; их компактный
+evidence summary находится в [evaluation_report.md](evaluation_report.md).
 
-## Сохраняемый KartaView sample
+## Production data contract
 
-Live запрос был направлен в точку `55.7558, 37.6173` с радиусом 20 м. Получена
-одна уникальная запись KartaView, она нормализована, скачана, декодирована и
-прошла весь путь до финального manifest, MegaLoc descriptor и FAISS index.
+Deployable Moscow gallery строится только из физически сохранённых изображений
+**Mapillary** и **KartaView**. Exact-AOI gate применяет сохранённую OSM
+административную границу: relation `102269`, `MultiPolygon` из 10 компонентов,
+bounds `36.8031012,55.1421745,37.9674277,56.0212238`, SHA-256
+`33b5dbf852cb94e5292e7848974fba78641dd76339cad142e73b7419b5db4a8a`.
 
-| Стадия | Фактический результат |
-|---|---:|
-| KartaView cumulative tile attempts | 2 |
-| Успешные / неуспешные tile attempts | 2 / 0 |
-| Cumulative source records discovered | 2 |
-| Metadata normalized / duplicate / invalid | 1 / 1 / 0 |
-| Unique normalized records | 1 |
-| Реально сохранённые изображения | 1 |
-| Последний idempotency rerun: requested / newly downloaded / skipped existing / failed | 1 / 0 / 1 / 0 |
-| Basic validation: вход / удалено / выход | 1 / 0 / 1 |
-| Quality stage: вход / удалено / выход | 1 / 0 / 1 |
-| Dedup: exact removed / perceptual removed / выход | 0 / 0 / 1 |
-| Финальный reference manifest | 1 |
-| MegaLoc descriptors / failures | 1 / 0 |
-| FAISS gallery size | 1 |
+MSLS, Wikimedia Commons и прочие benchmark/training datasets исключены из
+production manifest, embedding и FAISS index. Они могут использоваться только
+для research/evaluation и не заменяют реальную московскую street-view gallery.
 
-`images_downloaded=0` в текущем `download.stats.json` относится именно к
-последнему повтору: единственный файл уже существовал и был повторно проверен,
-поэтому сетевой запрос не выполнялся. Сам файл действительно был получен при
-первом live запуске и остаётся в sample.
+## Фактический acquisition и publication
 
-Проверенная запись:
+| Стадия | Всего | Mapillary | KartaView | Что означает |
+|---|---:|---:|---:|---|
+| Local live source manifest | 50 339 | 20 178 | 30 161 | Нормализованные source records до проверки физического файла. |
+| Physical image screen | 26 954 | 20 165 | 6 789 | Локально существующие, полностью декодируемые изображения с валидными координатами. |
+| Canonical exact-AOI gallery | 23 014 | 16 528 | 6 486 | Файл существует, provenance сохранён, точный OSM polygon пройден. |
+| Final `manifest_clean.parquet` | 22 830 | 16 504 | 6 326 | Production-кандидат после quality/dedup/H3. |
 
-- KartaView image ID `1312303109`, sequence `3616873`;
-- координата `55.755878, 37.617322` внутри настроенного Moscow bbox;
-- время `2021-01-15T10:53:42Z`, heading `290.85°`;
-- JPEG `2704 × 2028`, 1 667 206 байт;
-- лицензия `CC BY-SA 4.0`, атрибуция
-  `© Grab and KartaView Contributors` сохранены в каждой стадии;
-- стабильный internal ID `43dbf5cf-90b8-51e2-8683-dda57a4bf0f8`.
+Physical screen не зафиксировал decode или coordinate rejection среди 26 954
+проверенных файлов. Exact-AOI filter исключил 3 940 строк вне polygon (3 637
+Mapillary и 303 KartaView). Таким образом canonical gallery — это не bbox
+approximation и не mix benchmark-данных.
 
-Источники фактов: [KartaView ingestion stats](../data/raw/sample/kartaview.stats.json),
-[download stats](../data/raw/sample/download.stats.json),
-[pipeline cleaning totals](../data/processed/sample/cleaning_report.json),
-[dataset report JSON](../data/processed/sample/reports/dataset.json),
-[embedding metadata](../data/embeddings/sample/megaloc/build_metadata.json) и
-[index metadata](../data/indexes/sample/megaloc/index_metadata.json).
+Cleaning report для canonical input:
 
-Счётчики ingestion cumulative: после обновления checkpoint schema был выполнен
-ещё один live HTTP request, который вернул уже известный source ID. Текущий
-checkpoint schema v2 содержит config fingerprint; финальный unique record count
-остался равен одному. Реальный index/API smoke на этом кадре вернул
-`low_confidence`, query embedding 93.62 ms, FAISS 2.18 ms и total 172.13 ms —
-ожидаемое fail-safe поведение для singleton gallery, не accuracy metric.
+| Проверка | Удалено | Осталось |
+|---|---:|---:|
+| Hard validation | 0 | 23 014 |
+| Quality stage | 0 | 23 014 |
+| Exact/local pHash dedup | 184 | 22 830 |
 
-## Cleaning и dedup на sample
+Quality score остаётся консервативным аналитическим signal; отсутствие quality
+rejection не означает, что каждая сцена одинаково пригодна для VPR. Dedup не
+делает глобальный O(N²) обход и не отбрасывает различные городские виды только
+из-за географической близости.
 
-Hard validation не обнаружила отсутствующий файл, ошибку decode, неверную
-координату, слишком маленькое изображение или неподдерживаемый формат. Quality
-stage не использовал жёсткое удаление по blur (`hard_blur_threshold=0.0`),
-поэтому ни одно изображение не было отброшено. Полученный
-`quality_score=0.998119` — внутренний составной score, а не ручная оценка сцены
-и не доказательство VPR-пригодности.
+## Измеренное покрытие
 
-Dedup использовал radius 15 м, heading threshold 45°, pHash Hamming threshold
-4, temporal preserve window 7 дней и same-sequence window 180 секунд. При одной
-строке сравнений и удалений не было. Поэтому sample проверяет выполнение и
-сохранение схемы, но не измеряет эффективность dedup на реальном масштабе.
-
-Подробные устойчивые отчёты: [basic cleaning](../data/processed/sample/reports/cleaning.json),
-[quality](../data/processed/sample/reports/quality.json),
-[dedup](../data/processed/sample/reports/dedup.json) и
-[final manifest summary](../data/processed/sample/reports/final.json).
-
-## Пространственная статистика sample
-
-| Метрика | Значение | Корректная интерпретация |
+| Метрика final gallery | Значение | Корректная интерпретация |
 |---|---:|---|
-| Total references | 1 | Одна точка, не городская галерея. |
-| Unique H3 resolution 6 cells | 1 | Индексный coarse bucket. |
-| Unique H3 resolution 9 cells | 1 | Индексный fine bucket. |
-| Occupied fixed-grid cells | 1 из 400 | Доля `0.0025`, то есть 0.25%. |
-| References per occupied cell, mean | 1.0 | Определено только для одной занятой ячейки. |
-| Nearest-reference sample count | 0 | Для единственной точки соседа нет. |
-| Nearest-reference p50 / p90 | не определены | В JSON сохранено `null`; число не подставлялось. |
-| Source proportions | KartaView 100%, Mapillary 0% | Относится только к этому sample. |
+| Fixed Moscow grid | 87 / 400 cells | Занято 21,75 % контрольной сетки. |
+| Empty grid cells | 313 | Большая часть фиксированной сетки не имеет reference. |
+| References per occupied cell, mean | 262,41 | Среднее не доказывает равномерность покрытия. |
+| Unique H3 fine cells | 6 046 | Индексная spatial statistic, не административные районы. |
+| Nearest-reference p50 / p90 | 28,74 / 154,17 м | Плотность среди имеющихся references, не гарантия query coverage. |
 
-Графики [scatter](../data/processed/sample/reports/scatter.png),
-[density](../data/processed/sample/reports/density.png),
-[source comparison](../data/processed/sample/reports/sources.png) и
-[preview](../data/processed/sample/reports/preview.jpg) автоматически созданы,
-но визуализируют одну запись. Их нельзя интерпретировать как карту плотности
-или покрытие Москвы.
+Покрытие частичное и неравномерное. Система не должна обещать локализацию
+каждой московской улицы, двора, времени года, направления камеры или типа
+сцены. `low_confidence` и `out_of_coverage` остаются ожидаемыми корректными
+результатами за пределами фактической плотности галереи.
 
-## Расширенный временный KartaView probe
+## Leakage-resistant real evaluation bundle
 
-Отдельный bounded live probe был выполнен в нескольких московских точках.
-Временные изображения и промежуточные файлы не являются устойчивыми
-репозиторными артефактами; ниже зафиксированы итоговые счётчики запуска без
-ссылок на временные пути.
+`make split-moscow` создаёт локальный, content-addressed bundle из final
+Mapillary/KartaView gallery. В текущем bundle `moscow_real_v1`:
 
-### Metadata
+| Split | Rows | Provider sequences | H3 areas |
+|---|---:|---:|---:|
+| Gallery | 18 821 | 16 000 | 1 600 |
+| Calibration queries | 493 | 180 | 182 |
+| Final test queries | 507 | 342 | 315 |
 
-- 9 HTTP tile requests, без повторов в этом probe;
-- 5 успешных ответов и 4 read timeout;
-- из 5 успешных: 1 непустой и 4 пустых;
-- один успешный ответ был помечен как truncated по заданному bounded limit;
-- 5 уникальных нормализованных записей;
-- у всех 5 были и heading, и sequence ID.
+Split использует sequence holdout, positive-distance threshold 100 м, minimum
+query spacing 20 м, pHash threshold 4 и calibration/test geographic embargo
+100 м. Coverage gate passed. Pairwise audit между gallery/calibration/test не
+обнаружил общих IDs, source IDs, file SHA-256, sequences или pHash-near pairs;
+query union не содержит exact/pHash duplicate или spacing violation. Bundle
+fingerprint: `a8e24a77b4b4fb1a22a1a9f3198d050eca798d33565b2be8ec1aad3830e09a83`.
 
-### Download и финальная подготовка
+Это позволяет выбрать retriever и confidence threshold на calibration, а затем
+один раз измерить замороженную конфигурацию на test. Нельзя использовать test
+для model/threshold tuning. Отдельная confidence calibration сама по себе не
+калибрует `uncertainty_radius_m`.
 
-- 3 изображения были успешно получены и впоследствии сохранились в финальном
-  валидном manifest;
-- 1 URL завершился постоянным HTTP 404;
-- 1 URL завершился HTTP 502 после 2 retry;
-- download observability на итоговом повторе: `network_attempts=4`,
-  `retry_attempts=2`, `timeout_events=0`, `skipped_existing=3`, `failed=2`;
-- финальный валидный manifest: 3 references;
-- все 3 попали в одну из 400 ячеек той же fixed Moscow grid.
+## Итоговая модель и реальный held-out результат
 
-Четыре metadata read timeout и `timeout_events=0` не противоречат друг другу:
-первое относится к запросам KartaView metadata, второе — к отдельной стадии
-скачивания изображений. Probe показывает, что retry/checkpoint/error counters
-работают и что выбранные точки дали крайне разреженный результат. Он не
-измеряет полное доступное покрытие KartaView в Москве.
+Calibration при `threshold=0.0` сравнила MegaLoc и DINOv2+SALAD на одних и тех
+же 493 query. SALAD получил более высокий raw Recall@1/5/10
+`29,61/36,31/39,55%` против `23,53/32,66/35,29%` у MegaLoc, но дал 30
+unthresholded false-confident ответов >100 м против 9 и существенно худший
+P90 accepted error (`2 296,98 м` против `152,67 м`). Safety-first calibration
+сначала исключает такие ошибки, затем максимизирует all-query <=100 м и answer
+rate. Поэтому выбрана конфигурация:
 
-## Mapillary
+```text
+RETRIEVER=megaloc
+COORDINATE_ESTIMATOR=weighted_medoid
+CONFIDENCE_THRESHOLD=0.5548002022369389
+```
 
-| Метрика | Результат |
-|---|---:|
-| Live metadata records discovered | 0 |
-| Live images downloaded | 0 |
-| References в текущей галерее | 0 |
+Её calibration result: 50/493 ответов, 0 false-confident >100 м и all-query
+<=25/50/100 м `8,52/9,74/10,14%`. Для SALAD соответствующий zero-false-
+confident threshold `0.7803838356776883` дал 44/493 и `6,69/8,32/8,92%`.
 
-Причина — в окружении отсутствует `MAPILLARY_ACCESS_TOKEN`. Loader проверен на
-этом пути и завершается с exit code 1 и явным сообщением о требуемой переменной,
-до выполнения live API запроса. Поэтому нулевой счётчик не означает отсутствие
-изображений Mapillary в Москве: источник не был измерен без credentials. Это
-внешний блокер, требующий пользовательского access token; fixtures и остальной
-pipeline работают независимо от него.
+После заморозки selection единственный final test (507 query) дал Recall@1/5/10
+`17,36/23,87/26,63%`, all-query <=25/50/100 м `1,78/1,97/2,17%`, 11/507
+answers (2,17%), 0 false-confident >100 м и median/P90 accepted error
+`13,45/33,85 м`. Это полезный safety result, но очень низкий answer rate:
+система не является city-wide launch-ready локализатором. Detailed denominators
+и latency — в [evaluation_report.md](evaluation_report.md).
 
-## Ресурсы и ограничение большого запуска
+Отдельная 100-query, 100-area, 72-sequence real calibration ablation сравнила
+retrieval-only с bounded OpenCV SIFT rerank при той же frozen конфигурации.
+All-query accuracy и answer rate не изменились (все выбранные query
+abstained), Recall@1 снизился на 1 п.п., а median latency выросла на
+1 002,40 мс. Поэтому `VERIFICATION_ENABLED=false` сохранён; подробности и
+ограничение этой абляции — в [verification_report.md](verification_report.md).
 
-На момент отчёта машина имела Apple M1 Pro (10 CPU cores), 16 GiB RAM,
-доступный PyTorch MPS и около 25 GiB свободного места на data volume; volume был
-заполнен на 95%. Python 3.12.12 и PyTorch 2.13.0 использовались в локальном
-окружении.
+## Воспроизводимость и расположение артефактов
 
-Единственный сохранённый JPEG занимает около 1.59 MiB, но по одному файлу
-нельзя надёжно прогнозировать средний размер московского source. Один
-8 448-мерный `float32` descriptor занимает 33 792 байта до служебных данных;
-exact FAISS требует память того же порядка для векторов. С учётом 25 GiB
-свободного места, model caches, исходных изображений и промежуточных manifests
-неограниченный полный download был бы небезопасен. Поэтому `ingest-moscow`
-дополнительно требует явного `CONFIRM_LARGE_RUN=1`, а фактический large run не
-заявляется выполненным.
+```bash
+# Воссоздать/обновить production gallery из live Mapillary + KartaView.
+make prepare-moscow-gallery
 
-## Что эти данные доказывают и чего не доказывают
+# Создать защищённые от leakage gallery/calibration/test manifests.
+make split-moscow
 
-Доказано фактическим запуском:
+# Оценить оба retriever только на calibration split.
+make benchmark-moscow-models TORCH_DEVICE=mps EMBEDDING_BATCH_SIZE=1 EVAL_TOP_K=10
 
-- текущий KartaView API может вернуть нормализуемую московскую запись;
-- реальный файл скачивается, декодируется и сохраняет ID/coordinate/time/
-  heading/sequence/license/attribution;
-- повторный download пропускает уже валидный файл;
-- schema проходит cleaning, quality, dedup, H3, final manifest, embedding и
-  FAISS build;
-- сетевые и permanent failures учитываются отдельно.
+# После выбора модели по calibration: калибровка, frozen test, gallery-only index.
+make calibrate-moscow-confidence MOSCOW_EVAL_MODEL=<selected-model>
+CONFIRM_FINAL_TEST=1 make benchmark-moscow-test \
+  MOSCOW_EVAL_MODEL=<selected-model> \
+  MOSCOW_CONFIDENCE_THRESHOLD=<calibrated-threshold>
+make index-moscow-gallery RETRIEVER=<selected-model>
+```
 
-Не доказано:
+Основные локальные артефакты (крупные data files игнорируются Git):
 
-- покрытие районов или дорог Москвы каким-либо источником;
-- достаточная плотность, heading/viewpoint/season diversity;
-- nearest-reference distribution на масштабе города;
-- retrieval/localization accuracy на street-view held-out queries;
-- пригодность текущего sample как production gallery;
-- преимущество одного retriever или coordinate estimator на уличных данных.
+- `data/raw/moscow/moscow_admin_boundary.geojson` и `.stats.json` — exact AOI;
+- `data/processed/moscow/canonical_reference_gallery.parquet` — exact-AOI
+  publication до final cleaning;
+- `data/processed/moscow/manifest_clean.parquet` — final two-source manifest;
+- `data/processed/moscow/reports/` — coverage, cleaning и source reports;
+- `data/evaluation/moscow_real_v1/` — gallery/calibration/test split и audit;
+- `data/embeddings/moscow/<retriever>/` и
+  `data/indexes/moscow/<retriever>/` — только после embedding/index build.
 
-Следующий корректный data milestone — после добавления Mapillary token и
-повторной оценки диска выполнить ограниченный, возобновляемый двухисточниковый
-Moscow acquisition, построить coverage report, а затем отделить query от
-gallery по sequence/time и только после этого считать продуктовые метрики.
+Перед повторным embedding/index build нужно повторно проверить свободный диск:
+exact FAISS, 8 448-dimensional descriptors, model cache и resumable chunks
+требуют несколько GiB временного пространства.
+
+## Provenance, лицензии и отображение
+
+Каждая reference row должна сохранить `source`, `source_image_id`,
+`sequence_id`, `license`, `attribution`, source/profile links и нужные поля
+metadata. API возвращает display-safe attribution для match, а frontend
+показывает её рядом с thumbnail; Mapillary card дополнительно показывает
+официальный linked mark, карта — `© OpenStreetMap contributors`.
+
+Детальные условия Mapillary, KartaView, OSM/tiles, Commons и model weights — в
+[docs/licenses.md](licenses.md). Этот отчёт является engineering record, а не
+юридической консультацией.
+
+## Чего эти данные не доказывают
+
+- full-city или even district-complete coverage Москвы;
+- достаточную viewpoint/heading/season diversity в каждой занятой ячейке;
+- заранее известную точность для нового пользовательского снимка;
+- преимущество MegaLoc над SALAD для любых unthresholded retrieval metrics или
+  других городов: выбор относится только к этому calibrated Moscow bundle;
+- допустимость Commons, MSLS или другого benchmark-корпуса в production index;
+- готовность Docker runtime на этом host: Compose configuration проверяется,
+  но Docker daemon сейчас недоступен для container smoke.

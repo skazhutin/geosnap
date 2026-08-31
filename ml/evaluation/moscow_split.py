@@ -47,10 +47,13 @@ AREA_H3_RESOLUTION = 8
 SAMPLE_H3_RESOLUTION = 10
 PHASH_BITS = 64
 SPLIT_SCHEMA_VERSION = 2
-ALGORITHM_VERSION = "sequence-holdout-v2"
+# v3 replaces the per-candidate gallery rebuild with an incremental positive
+# support graph and records the bounded initial candidate policy in the audit.
+ALGORITHM_VERSION = "sequence-holdout-v3"
 DEFAULT_CALIBRATION_TEST_EMBARGO_M = 100.0
 DEFAULT_MINIMUM_GALLERY_FRACTION = 0.5
 INDEPENDENT_QUERY_TARGET = 100
+DEFAULT_HOLDOUT_CANDIDATE_MULTIPLIER = 4
 BUNDLE_MANIFEST_NAME = "bundle_manifest.json"
 
 SequenceKey = tuple[str, str]
@@ -207,6 +210,7 @@ def _validate_parameters(
     minimum_gallery_sequences: int,
     minimum_gallery_areas: int,
     minimum_gallery_fraction: float,
+    holdout_candidate_multiplier: int,
 ) -> None:
     if max_queries < 1:
         raise ValueError("max_queries must be >= 1")
@@ -231,6 +235,8 @@ def _validate_parameters(
             raise ValueError(f"{name} must be >= 0")
     if not math.isfinite(minimum_gallery_fraction) or not 0 <= minimum_gallery_fraction <= 1:
         raise ValueError("minimum_gallery_fraction must be finite and in [0, 1]")
+    if holdout_candidate_multiplier < 1:
+        raise ValueError("holdout_candidate_multiplier must be >= 1")
     if minimum_queries_per_split * 2 > max_queries:
         raise ValueError("max_queries cannot satisfy minimum_queries_per_split for both query splits")
 
@@ -394,40 +400,151 @@ def _choose_held_out_sequences(
     *,
     seed: int,
     positive_distance_m: float,
+    max_queries: int,
     minimum_gallery_rows: int,
     minimum_gallery_sequences: int,
     minimum_gallery_areas: int,
     minimum_gallery_fraction: float,
-) -> list[SequenceKey]:
+    holdout_candidate_multiplier: int,
+) -> tuple[list[SequenceKey], dict[str, int | bool]]:
+    """Choose a bounded, sequence-held-out candidate pool without quadratic scans.
+
+    The former implementation rebuilt a complete gallery and recomputed every
+    held-out positive for every candidate sequence.  That is correct but
+    becomes quadratic when providers expose mostly one-image sequence IDs.  We
+    instead build the sequence-level positive-support graph once.  Removing a
+    candidate then updates only query frames supported by that sequence, so an
+    already chosen sequence can never lose its final gallery positive.
+
+    The initial pool intentionally oversamples the query cap.  The downstream
+    fixed-point selection still performs the definitive image/hash/spacing
+    leakage checks and can only reduce this pool; it never publishes an
+    unverified candidate.
+    """
+
+    ordered_sequences = _sequence_order(frame, eligible_indices, seed)
+    sequence_by_index = {int(index): _sequence_key(frame, int(index)) for index in usable_indices}
+    area_by_index = {int(index): str(frame.at[index, "evaluation_area_h3"]) for index in usable_indices}
+
+    sequence_rows: dict[SequenceKey, list[int]] = defaultdict(list)
+    sequence_areas: dict[SequenceKey, set[str]] = defaultdict(set)
+    area_sequence_counts: Counter[str] = Counter()
+    for index in usable_indices:
+        row_index = int(index)
+        sequence = sequence_by_index[row_index]
+        sequence_rows[sequence].append(row_index)
+        sequence_areas[sequence].add(area_by_index[row_index])
+    for areas in sequence_areas.values():
+        for area in areas:
+            area_sequence_counts[area] += 1
+
+    # Each eligible frame tracks the *provider sequences* that can still be a
+    # gallery positive.  One sequence is sufficient regardless of how many of
+    # its frames appear nearby, matching `_query_distances` semantics.
+    spatial = _SpatialIndex(frame, usable_indices, positive_distance_m)
+    support_count_by_index: dict[int, int] = {}
+    frames_supported_by_sequence: dict[SequenceKey, list[int]] = defaultdict(list)
+    viable_frames_by_sequence: Counter[SequenceKey] = Counter()
+    for index in sorted(eligible_indices):
+        row_index = int(index)
+        sequence = sequence_by_index[row_index]
+        lat = float(frame.at[row_index, "lat"])
+        lon = float(frame.at[row_index, "lon"])
+        supporter_sequences: set[SequenceKey] = set()
+        for candidate in spatial.nearby(lat, lon):
+            candidate_index = int(candidate)
+            candidate_sequence = sequence_by_index[candidate_index]
+            if candidate_index == row_index or candidate_sequence == sequence:
+                continue
+            distance = haversine_m(
+                lat,
+                lon,
+                float(frame.at[candidate_index, "lat"]),
+                float(frame.at[candidate_index, "lon"]),
+            )
+            if distance <= positive_distance_m:
+                supporter_sequences.add(candidate_sequence)
+        if not supporter_sequences:
+            # `_eligible_frames` should already have rejected this row. Keep
+            # the graph defensive so a future eligibility change fails closed.
+            continue
+        support_count_by_index[row_index] = len(supporter_sequences)
+        viable_frames_by_sequence[sequence] += 1
+        for supporter in supporter_sequences:
+            frames_supported_by_sequence[supporter].append(row_index)
+
+    reserve_rows = max(
+        minimum_gallery_rows,
+        math.ceil(len(usable_indices) * minimum_gallery_fraction),
+    )
+    candidate_cap = min(
+        len(ordered_sequences),
+        max_queries * holdout_candidate_multiplier,
+    )
     chosen: list[SequenceKey] = []
-    minimum_rows_from_fraction = math.ceil(len(usable_indices) * minimum_gallery_fraction)
-    for sequence in _sequence_order(frame, eligible_indices, seed):
-        trial = {*chosen, sequence}
-        distances, gallery = _query_distances(
-            frame,
-            eligible_indices,
-            trial,
-            usable_indices,
-            positive_distance_m=positive_distance_m,
-        )
-        represented = {_sequence_key(frame, index) for index in distances}
-        if represented != trial:
+    chosen_set: set[SequenceKey] = set()
+    gallery_rows = len(usable_indices)
+    gallery_sequences = len(sequence_rows)
+    rejected_no_positive = 0
+    rejected_gallery_reserve = 0
+
+    for sequence in ordered_sequences:
+        if len(chosen) >= candidate_cap:
+            break
+        rows = sequence_rows.get(sequence, [])
+        areas = sequence_areas.get(sequence, set())
+        if (
+            gallery_rows - len(rows) < reserve_rows
+            or gallery_sequences - 1 < minimum_gallery_sequences
+            or len(area_sequence_counts) - sum(area_sequence_counts[area] == 1 for area in areas)
+            < minimum_gallery_areas
+        ):
+            rejected_gallery_reserve += 1
             continue
-        gallery_sequences = {_sequence_key(frame, index) for index in gallery}
-        gallery_areas = {str(frame.at[index, "evaluation_area_h3"]) for index in gallery}
-        if len(gallery) < max(minimum_gallery_rows, minimum_rows_from_fraction):
+        if viable_frames_by_sequence[sequence] < 1:
+            rejected_no_positive += 1
             continue
-        if len(gallery_sequences) < minimum_gallery_sequences:
+
+        lost_viable_frames: Counter[SequenceKey] = Counter()
+        for frame_index in frames_supported_by_sequence.get(sequence, []):
+            if support_count_by_index[frame_index] == 1:
+                lost_viable_frames[sequence_by_index[frame_index]] += 1
+        if any(
+            affected in chosen_set
+            and viable_frames_by_sequence[affected] <= lost_count
+            for affected, lost_count in lost_viable_frames.items()
+        ):
+            rejected_no_positive += 1
             continue
-        if len(gallery_areas) < minimum_gallery_areas:
-            continue
+
         chosen.append(sequence)
+        chosen_set.add(sequence)
+        gallery_rows -= len(rows)
+        gallery_sequences -= 1
+        for area in areas:
+            area_sequence_counts[area] -= 1
+            if area_sequence_counts[area] == 0:
+                del area_sequence_counts[area]
+        for frame_index in frames_supported_by_sequence.get(sequence, []):
+            if support_count_by_index[frame_index] == 1:
+                viable_frames_by_sequence[sequence_by_index[frame_index]] -= 1
+            support_count_by_index[frame_index] -= 1
+
     if not chosen:
         raise MoscowSplitError(
             "insufficient coverage: no sequence can be held out while retaining "
             "a gallery positive and the configured gallery reserve"
         )
-    return chosen
+    return chosen, {
+        "ordered_eligible_sequence_count": len(ordered_sequences),
+        "candidate_multiplier": holdout_candidate_multiplier,
+        "candidate_sequence_cap": candidate_cap,
+        "candidate_sequences_selected": len(chosen),
+        "candidate_rows_selected": len(usable_indices) - gallery_rows,
+        "candidate_cap_reached": len(chosen) >= candidate_cap,
+        "candidate_sequences_rejected_no_gallery_positive": rejected_no_positive,
+        "candidate_sequences_rejected_gallery_reserve": rejected_gallery_reserve,
+    }
 
 
 def _filter_gallery_leakage(
@@ -1247,6 +1364,7 @@ def run(
     minimum_gallery_sequences: int = 1,
     minimum_gallery_areas: int = 1,
     minimum_gallery_fraction: float = DEFAULT_MINIMUM_GALLERY_FRACTION,
+    holdout_candidate_multiplier: int = DEFAULT_HOLDOUT_CANDIDATE_MULTIPLIER,
     replace_existing: bool = False,
 ) -> dict[str, Any]:
     """Create gallery/calibration/test Parquets and a fail-closed audit."""
@@ -1264,6 +1382,7 @@ def run(
         minimum_gallery_sequences=minimum_gallery_sequences,
         minimum_gallery_areas=minimum_gallery_areas,
         minimum_gallery_fraction=minimum_gallery_fraction,
+        holdout_candidate_multiplier=holdout_candidate_multiplier,
     )
     frame = read_manifest(input_manifest, allow_empty=True).reset_index(drop=True)
     _validate_moscow_manifest(frame)
@@ -1286,16 +1405,18 @@ def run(
     )
     if not eligible_indices:
         raise MoscowSplitError("no query candidates exist in multi-sequence neighborhoods with gallery positives")
-    initial_sequences = _choose_held_out_sequences(
+    initial_sequences, initial_holdout_selection = _choose_held_out_sequences(
         frame,
         eligible_indices,
         usable_indices,
         seed=seed,
         positive_distance_m=positive_distance_m,
+        max_queries=max_queries,
         minimum_gallery_rows=minimum_gallery_rows,
         minimum_gallery_sequences=minimum_gallery_sequences,
         minimum_gallery_areas=minimum_gallery_areas,
         minimum_gallery_fraction=minimum_gallery_fraction,
+        holdout_candidate_multiplier=holdout_candidate_multiplier,
     )
     (
         selected,
@@ -1457,6 +1578,7 @@ def run(
         "minimum_gallery_sequences": minimum_gallery_sequences,
         "minimum_gallery_areas": minimum_gallery_areas,
         "minimum_gallery_fraction": minimum_gallery_fraction,
+        "holdout_candidate_multiplier": holdout_candidate_multiplier,
     }
     bundle_fingerprint = _bundle_fingerprint(
         input_manifest_sha256=input_manifest_sha256,
@@ -1477,6 +1599,7 @@ def run(
             **eligibility,
             "eligible_query_frames_before_holdout": len(eligible_indices),
             "eligible_sequences_before_holdout": len({_sequence_key(frame, index) for index in eligible_indices}),
+            "initial_holdout_selection": initial_holdout_selection,
             "initial_held_out_provider_sequences": sorted(_sequence_label(sequence) for sequence in initial_sequences),
             "final_held_out_provider_sequences": sorted(
                 _sequence_label(sequence) for sequence in active_query_sequences
@@ -1646,6 +1769,12 @@ def main() -> None:
         default=DEFAULT_MINIMUM_GALLERY_FRACTION,
     )
     parser.add_argument(
+        "--holdout-candidate-multiplier",
+        type=int,
+        default=DEFAULT_HOLDOUT_CANDIDATE_MULTIPLIER,
+        help="bounded initial holdout pool as a multiple of --max-queries",
+    )
+    parser.add_argument(
         "--replace-existing",
         action="store_true",
         help="Replace the entire prior split bundle after a verified staged build",
@@ -1667,6 +1796,7 @@ def main() -> None:
         minimum_gallery_sequences=args.minimum_gallery_sequences,
         minimum_gallery_areas=args.minimum_gallery_areas,
         minimum_gallery_fraction=args.minimum_gallery_fraction,
+        holdout_candidate_multiplier=args.holdout_candidate_multiplier,
         replace_existing=args.replace_existing,
     )
 

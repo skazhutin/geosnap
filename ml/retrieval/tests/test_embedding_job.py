@@ -49,6 +49,7 @@ def test_embedding_job_records_mapping_metadata_and_failures(tmp_path: Path) -> 
         "failures.jsonl",
     }
     assert all(row["artifact_generation"] == build["artifact_generation"] for row in metadata)
+    assert not (artifacts.root / ".embedding-checkpoints").exists()
     failures = [json.loads(line) for line in artifacts.failures_path.read_text().splitlines()]
     assert failures[0]["reference_id"] == "stable-b"
     assert "missing.jpg" in failures[0]["image_path"]

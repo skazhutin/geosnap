@@ -419,7 +419,9 @@ def create_localization_service() -> LocalizationService:
     top_k = int(os.environ.get("RETRIEVAL_TOP_K", "20"))
     index_path = Path(os.environ.get("FAISS_INDEX_PATH", "data/indexes/moscow/index.faiss"))
     index_dir = Path(os.environ.get("GEOSNAP_INDEX_DIR", str(index_path.parent)))
-    confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.55"))
+    confidence_threshold = float(
+        os.environ.get("CONFIDENCE_THRESHOLD", str(LocalizerConfig().confidence_threshold))
+    )
     cluster_radius_m = float(os.environ.get("LOCALIZATION_CLUSTER_RADIUS_M", "100"))
     max_cluster_diameter_m = float(os.environ.get("LOCALIZATION_MAX_CLUSTER_DIAMETER_M", "150"))
     out_of_coverage_similarity = float(os.environ.get("OOC_SIMILARITY_THRESHOLD", "0.15"))

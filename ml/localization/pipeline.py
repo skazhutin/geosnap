@@ -13,6 +13,12 @@ from .geo import haversine_m, percentile
 from .models import Candidate, LocalizationResult, LocalizationStatus, LocationHypothesis
 from .uncertainty import UncertaintyCalibration
 
+# Selected on the real Moscow calibration split using the safety-first policy:
+# first eliminate false-confident answers beyond 100 m, then maximize useful
+# all-query accuracy.  It is an operating threshold, not a calibrated
+# probability or uncertainty-radius model.
+DEFAULT_CONFIDENCE_THRESHOLD = 0.5548002022369389
+
 
 def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
@@ -30,7 +36,7 @@ class LocalizerConfig:
     minimum_cluster_mass: float = 0.45
     minimum_cluster_mass_margin: float = 0.10
     minimum_cluster_candidates: int = 2
-    confidence_threshold: float = 0.55
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD
     good_hypothesis_separation_m: float = 500.0
 
     def __post_init__(self) -> None:

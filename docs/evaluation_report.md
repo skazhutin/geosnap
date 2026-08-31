@@ -1,65 +1,104 @@
-# Отчёт об оценке
+# Real Moscow model selection and frozen test
 
-Актуально на 2026-08-15. Детальный воспроизводимый протокол и команды находятся
-в [tracked Commons report](../data/evaluation/moscow_commons_proxy_run_2026-08-15.md),
-а абляция геометрии — в [verification report](verification_report.md).
+Актуально на 2026-08-31. Это единственный tracked summary, который описывает
+выбор deployable retriever. Он использует только исходные Mapillary/KartaView
+street-view изображения из exact-AOI Moscow gallery; Commons и MSLS не
+участвовали в model selection, confidence calibration, production embedding
+или FAISS index.
 
-> Текущий набор — 20 реальных геопривязанных JPEG с Wikimedia Commons: 12
-> gallery и 8 held-out query по четырём московским landmarks. Это маленький,
-> вручную подобранный, landmark-biased и **не street-view** proxy. Он проверяет
-> код и сравнение конфигураций, но не доказывает покрытие/точность по Москве и
-> не годится для калибровки confidence.
+> Результат честно ограничен частичным покрытием: это не city-wide accuracy
+> claim и не основание включать локализацию для любого снимка Москвы.
 
-## Воспроизводимость и leakage
+## Protocol and leakage boundary
 
-- canonical dataset SHA-256:
-  `39c331f6b53b439f4e40b993d58caf80f69f279a07fe1845442f2f650943b6ab`;
-- 20/20 записей закреплены Commons SHA-1, JPEG SHA-256, координатой и
-  attribution/license в tracked snapshot ledger;
-- cross-split overlap page ID / Commons SHA-1 / JPEG SHA-256 / pHash: 0;
-- same-landmark cross-split author/time matches: 0/0;
-- retrieval positive: gallery geotag в пределах 100 м от query geotag;
-- accuracy ≤25/50/100 м использует все 8 query, abstention считается ошибкой;
-  median/p90 считаются только по `status=ok`.
+- Final clean source gallery: 22 830 Mapillary/KartaView references.
+- Leakage-resistant bundle: 18 821 gallery rows, 493 calibration queries and
+  507 frozen held-out test queries.
+- Gallery and query provider sequences are disjoint. The audit also found zero
+  cross-split overlap in record ID, source image ID, source URL, resolved path,
+  declared/computed SHA-256 and pHash-near duplicates (Hamming threshold 4).
+- Every query has a gallery positive within 100 m. Query spacing is at least
+  20 m; calibration/test use a 100 m geographic embargo.
+- Both models used pinned official checkpoints, MPS, batch size 8, top-K 10,
+  weighted geographic medoid and isolated normalized exact
+  `faiss.IndexFlatIP`. All accuracy figures use **all queries** as the
+  denominator, so abstentions count as failures.
+- Candidate model selection used calibration only at threshold `0.0`. The
+  test split was opened once after model, estimator and threshold were frozen.
 
-## Основной результат
+The generated local JSON/Markdown evidence is intentionally ignored because it
+contains generated paths and per-query records:
+`data/evaluation/moscow_real_v1/reports/`.
 
-| Model | R@1 / R@5 / R@10 | ≤25 / ≤50 / ≤100 м | Answer rate | Median / p90, answered | Median offline query |
+## Calibration: raw retrieval and localization
+
+| Model | R@1 / R@5 / R@10 | <=25 / <=50 / <=100 m | Answer rate | Median / P90 answered error | Query / end-to-end median |
 |---|---:|---:|---:|---:|---:|
-| MegaLoc | 87.5 / 100 / 100% | 37.5 / 62.5 / 75% | 75% | 25.78 / 52.92 м | 72.78 ms |
-| DINOv2 + SALAD | 87.5 / 100 / 100% | 37.5 / 62.5 / 75% | 75% | 23.37 / 52.92 м | 70.65 ms |
+| MegaLoc | 23.53 / 32.66 / 35.29% | 9.53 / 11.36 / 12.17% | 14.00% | 13.34 / 152.67 m | 83.53 / 126.47 ms |
+| DINOv2 + SALAD | 29.61 / 36.31 / 39.55% | 10.95 / 15.21 / 17.04% | 23.12% | 26.44 / 2,296.98 m | 78.33 / 120.89 ms |
 
-Оба retriever имеют descriptor 8,448 `float32`; 12 gallery descriptors занимают
-405,504 bytes. Средняя query embedding latency: MegaLoc 73.33 ms, SALAD
-71.56 ms; median exact FAISS: 0.428 и 0.500 ms; gallery throughput: 15.11 и
-16.46 images/s соответственно. Это offline path без HTTP/network overhead.
+SALAD has higher unthresholded recall and all-query localization on this
+calibration pass, but its accepted-error tail is much worse and it produces 30
+unthresholded false-confident answers beyond 100 m versus MegaLoc's 9. Raw
+metrics were not used alone to select a deployment operating point.
 
-MegaLoc остаётся инженерным default: метрики на proxy связаны, а его официальный
-код/checkpoint имеют MIT-лицензию; SALAD repository — GPL-3.0 и остаётся
-challenger. Это решение по deployability, а не заявление о большей точности.
+## Safety-first confidence calibration and decision
 
-## Robustness и полезные абляции
+The fixed policy first minimizes `status=ok && error > 100 m`, then maximizes
+unconditional <=100 m accuracy, then answer rate, and finally prefers the
+higher threshold. It never repurposes the held-out test for tuning.
 
-Девять детерминированных преобразований каждого реального query дали 72
-derived query; они не считаются новыми географическими примерами. MegaLoc
-сохранил R@1/5/10 `87.5/100/100%`, accuracy `37.5/62.5/75%`, answer rate 75%; у
-SALAD — те же retrieval/answer-rate, accuracy `40.28/62.5/75%`.
+| Candidate | Threshold | False-confident >100 m | Answered / total | All-query <=25 / <=50 / <=100 m |
+|---|---:|---:|---:|---:|
+| MegaLoc | `0.5548002022369389` | 0 | 50 / 493 | 8.52 / 9.74 / 10.14% |
+| DINOv2 + SALAD | `0.7803838356776883` | 0 | 44 / 493 | 6.69 / 8.32 / 8.92% |
 
-Для MegaLoc weighted centroid улучшил primary ≤25 м с 37.5% до 50%, median с
-25.78 до 15.35 м и p90 с 52.92 до 41.44 м. На derived query он улучшил ≤25 м
-до 50%, ≤50 м до 65.28%, median до 14.29 м и p90 до 50.26 м. Default остаётся
-weighted medoid до проверки на независимом street-view split: менять production
-policy по восьми landmark query было бы overfit.
+**Frozen deployment selection:** `RETRIEVER=megaloc`,
+`COORDINATE_ESTIMATOR=weighted_medoid`,
+`CONFIDENCE_THRESHOLD=0.5548002022369389`. It has the stronger useful
+post-safety calibration result and the much better raw accepted-error tail;
+this is not a claim that MegaLoc wins every unthresholded retrieval metric.
 
-OpenCV SIFT verification не изменила Recall или top-1, но снизила accuracy
-≤25/50/100 м с `37.5/62.5/75%` до `12.5/12.5/12.5%`, answer rate с 75% до
-12.5% и увеличила median offline path с 88.64 до 719.42 ms. Поэтому
-`VERIFICATION_ENABLED=false` остаётся default.
+## Single frozen held-out test
 
-## Production blocker
+The test used the selection above, unchanged after calibration, on 507 new
+queries:
 
-Нужен заранее зафиксированный leakage-resistant Moscow street-view benchmark:
-разные sequence/time для gallery и query, обычные улицы, повторяющиеся фасады,
-сезоны/освещение/viewpoint и реалистичный масштаб галереи. До этого confidence
-и uncertainty не калиброваны, а ни один результат выше нельзя выдавать за
-city-wide product accuracy.
+| Metric | Result |
+|---|---:|
+| Recall@1 / @5 / @10 | 17.36 / 23.87 / 26.63% |
+| All-query localization <=25 / <=50 / <=100 m | 1.78 / 1.97 / 2.17% |
+| Answer rate | 2.17% (11 / 507) |
+| Conditional <=25 / <=50 / <=100 m among answers | 81.82 / 90.91 / 100.00% |
+| Median / P90 error among answers | 13.45 / 33.85 m |
+| `low_confidence` / `out_of_coverage` | 41.42 / 56.41% |
+| False-confident answers >100 m | 0 |
+| Query / end-to-end median | 76.71 / 113.36 ms |
+
+The safety criterion holds on this frozen split, but the 2.17% answer rate is
+the material product limitation. GeoSnap is therefore a partial-coverage,
+abstention-first prototype rather than a launch-ready city-wide geolocator.
+
+## Production artifact bound to the result
+
+The deployed index is built from the **gallery split only**:
+
+- `data/embeddings/moscow/megaloc/`: 18 821 descriptors, dimension 8 448;
+- `data/indexes/moscow/megaloc/`: 18 821-vector exact `IndexFlatIP` index;
+- `index.faiss` SHA-256:
+  `102eb5d74730aab96ccaf6b61d4dd1ed7560de43ef0ef1e60f8aada23d3d9344`;
+- vector storage: 635,999,232 bytes; embedding job completed with no residual
+  checkpoint directory.
+
+`uncertainty_radius_m` remains `null`: selecting a confidence threshold does
+not calibrate a geographic uncertainty radius. The service exposes the warning
+`uncertainty_not_calibrated` rather than inventing one.
+
+## What is not evidence for this selection
+
+The historical Commons landmark proxy and its older verification experiment
+remain research-only records. They neither select this model nor establish
+Moscow coverage. The current 100-query real-data geometric-verification
+ablation found zero all-query accuracy gain and +1,002.40 ms median overhead,
+so `VERIFICATION_ENABLED=false` remains the recorded default; details and its
+all-abstention limitation are in [verification_report.md](verification_report.md).

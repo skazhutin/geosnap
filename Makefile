@@ -68,8 +68,9 @@ MOSCOW_CALIBRATION_MANIFEST := $(MOSCOW_EVAL_DIR)/calibration_queries.parquet
 MOSCOW_TEST_MANIFEST := $(MOSCOW_EVAL_DIR)/test_queries.parquet
 MOSCOW_QUERY_MANIFEST ?= $(MOSCOW_CALIBRATION_MANIFEST)
 MOSCOW_MAX_QUERIES ?= 1000
+MOSCOW_HOLDOUT_CANDIDATE_MULTIPLIER ?= 4
 MOSCOW_EVAL_MODEL ?= $(EVAL_MODEL)
-MOSCOW_CONFIDENCE_THRESHOLD ?= 0.55
+MOSCOW_CONFIDENCE_THRESHOLD ?= 0.5548002022369389
 MOSCOW_REPORT_STEM ?= $(subst -,_,$(MOSCOW_EVAL_MODEL))_moscow_real_calibration
 MOSCOW_CALIBRATION_BENCHMARK_JSON ?= $(MOSCOW_EVAL_DIR)/reports/$(MOSCOW_REPORT_STEM).json
 MOSCOW_CONFIDENCE_REPORT_STEM ?= $(subst -,_,$(MOSCOW_EVAL_MODEL))_moscow_confidence_calibration
@@ -327,7 +328,8 @@ split-moscow:
 	$(PYTHON) -m ml.evaluation.moscow_split \
 		--manifest "$(MOSCOW_FINAL_MANIFEST)" --output-dir "$(MOSCOW_EVAL_DIR)" \
 		--max-queries "$(MOSCOW_MAX_QUERIES)" --min-query-spacing-m 20 \
-		--positive-distance-m 100 --phash-distance-threshold 4
+		--positive-distance-m 100 --phash-distance-threshold 4 \
+		--holdout-candidate-multiplier "$(MOSCOW_HOLDOUT_CANDIDATE_MULTIPLIER)"
 
 benchmark-moscow:
 	HF_HOME="$(HF_HOME)" $(PYTHON) -m ml.evaluation.moscow_benchmark \

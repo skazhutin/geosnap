@@ -68,5 +68,19 @@ claim about the final state of the repository.
 4. Any Moscow quality number requires a real, leakage-controlled query/gallery
    set. No metric may be invented when that set cannot be acquired.
 
+## Canonical SoT preservation status
+
+The canonical stored copies were subsequently verified against their tracked
+SHA-256 sidecars:
+
+- `docs/project_sot.md` —
+  `009852dbe06d74f8d50ee34714f221f8396265551692b057e9fb1b6726db1c0c`;
+- `docs/completion_directive.md` —
+  `238406917412ce5c3ad09f1165b86e5bbefa92a0613dc055aebca5696d3642f1`.
+
+This verifies the integrity of the stored copies. The original user attachment
+was not available for a fresh byte-for-byte comparison, so the repository makes
+no claim that byte identity with that unavailable attachment was re-verified.
+
 The full authoritative project prompt is preserved in `docs/project_sot.md`;
 the original attachment remains the byte-authoritative source.

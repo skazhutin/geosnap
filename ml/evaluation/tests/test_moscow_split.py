@@ -428,6 +428,67 @@ def test_sequence_identity_is_namespaced_by_provider(tmp_path: Path) -> None:
     assert audit["overlap_audit"]["gallery__calibration"]["sequence_id_overlap"] == 0
 
 
+def test_initial_holdout_pool_is_bounded_and_builds_positive_graph_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large sequence counts must not trigger one gallery rebuild per sequence."""
+
+    import ml.evaluation.moscow_split as split_module
+
+    sequence_count = 40
+    frame = pd.DataFrame(
+        {
+            "source": ["mapillary"] * sequence_count,
+            "sequence_id": [f"sequence-{number:03d}" for number in range(sequence_count)],
+            # Every sequence has a cross-sequence positive within 100 m.
+            "lat": [55.75] * sequence_count,
+            "lon": [37.61] * sequence_count,
+            "evaluation_area_h3": ["fixture-area"] * sequence_count,
+        }
+    )
+    original_spatial_index = split_module._SpatialIndex
+    spatial_index_builds = 0
+
+    class CountingSpatialIndex(original_spatial_index):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            nonlocal spatial_index_builds
+            spatial_index_builds += 1
+            super().__init__(*args, **kwargs)
+
+    def fail_if_legacy_gallery_rebuild_is_used(*args: object, **kwargs: object) -> None:
+        pytest.fail("held-out selection must not call _query_distances for every sequence")
+
+    monkeypatch.setattr(split_module, "_SpatialIndex", CountingSpatialIndex)
+    monkeypatch.setattr(split_module, "_query_distances", fail_if_legacy_gallery_rebuild_is_used)
+    chosen, diagnostics = split_module._choose_held_out_sequences(
+        frame,
+        eligible_indices=set(range(sequence_count)),
+        usable_indices=list(range(sequence_count)),
+        seed=11,
+        positive_distance_m=100.0,
+        max_queries=3,
+        minimum_gallery_rows=1,
+        minimum_gallery_sequences=1,
+        minimum_gallery_areas=1,
+        minimum_gallery_fraction=0.5,
+        holdout_candidate_multiplier=2,
+    )
+
+    assert spatial_index_builds == 1
+    assert len(chosen) == 6
+    assert len(set(chosen)) == 6
+    assert diagnostics == {
+        "ordered_eligible_sequence_count": sequence_count,
+        "candidate_multiplier": 2,
+        "candidate_sequence_cap": 6,
+        "candidate_sequences_selected": 6,
+        "candidate_rows_selected": 6,
+        "candidate_cap_reached": True,
+        "candidate_sequences_rejected_no_gallery_positive": 0,
+        "candidate_sequences_rejected_gallery_reserve": 0,
+    }
+
+
 def test_global_spacing_and_geographic_embargo_apply_to_query_union(tmp_path: Path) -> None:
     manifest = _diverse_fixture(tmp_path)
     output = tmp_path / "independent"

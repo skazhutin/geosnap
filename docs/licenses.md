@@ -13,17 +13,27 @@ replace them.
 
 ## Imagery and map data
 
+The deployable Moscow reference gallery is restricted to physically preserved
+**Mapillary** and **KartaView** imagery inside the pinned OSM administrative
+boundary. Its current final manifest has 22,830 references (16,504 Mapillary;
+6,326 KartaView). This is an engineering publication boundary, not a statement
+that either source grants full-city coverage or a blanket redistribution right.
+
 | Source | Current terms used by this project | Required handling |
 | --- | --- | --- |
 | Mapillary imagery | [Mapillary's current help article](https://help.mapillary.com/hc/en-us/articles/115001770409-CC-BY-SA-license-for-open-data) says public user images are shared under CC BY-SA and gives the expected per-image attribution form. API and commercial use are also subject to the current [Mapillary Terms](https://www.mapillary.com/terms). | Preserve image ID, contributor username, original image/profile links, license, and attribution in every manifest stage. When GeoSnap serves a reference image, show the visible official Mapillary mark linked to that image, the author/profile link, and CC BY-SA 4.0 beside it. Keep the registered application token outside the repository. Do not bypass API limits or create an uncontrolled bulk downloader. |
 | KartaView imagery | [KartaView Terms of Use](https://kartaview.org/terms), last modified 2025-06-17, state that street imagery is CC BY-SA 4.0. | Credit exactly `© Grab and KartaView Contributors`, preserve source/image links and license, and comply with CC BY-SA 4.0 when redistributing or adapting imagery. |
 | Wikimedia Commons evaluation images | License and attribution are file-specific; the acquisition snapshot retains each file page, author, license label/URL and hashes. See the [Commons reuse guidance](https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia). | Evaluation-only. Recheck every linked file page before reuse; do not treat the proxy as a deployable street-view gallery or as city-wide evidence. |
+| MSLS and other benchmark/training datasets | These are independently packaged datasets with their own terms, splits and possible redistribution restrictions. | Research/evaluation-only unless separately audited for a specific use. Never merge their images, descriptors or metadata into the Mapillary/KartaView production gallery or FAISS index. |
 | OpenStreetMap data | [OpenStreetMap copyright and license](https://www.openstreetmap.org/copyright): ODbL 1.0. | Show `© OpenStreetMap contributors` and link to the copyright page. Derived databases may trigger ODbL share-alike obligations. |
 | OpenStreetMap standard tiles | Governed separately by the [tile usage policy](https://operations.osmfoundation.org/policies/tiles/). | Suitable only for a light local demo with visible attribution. A public/high-volume deployment needs a compliant tile provider or self-hosted tiles. |
 
 Mapillary's Object Dataset and other benchmark datasets are **not** covered by
 the street-imagery row above. Each separately packaged dataset must be audited
 before use. No benchmark dataset is automatically a deployable Moscow gallery.
+The production publication gate accepts only `source=mapillary` and
+`source=kartaview`; Commons/MSLS material is excluded before embedding and
+indexing.
 
 Mapillary rows without `creator.username` are quarantined instead of receiving
 a synthetic generic attribution. The UI uses the green mark from Mapillary's
@@ -75,3 +85,9 @@ frontend renders these links adjacent to reference thumbnails, renders the
 official linked Mapillary mark on Mapillary cards, and renders map attribution
 on the map itself. Outbound URLs are limited to HTTPS and known source/license
 hosts before reaching the browser contract.
+
+For the Moscow AOI itself, GeoSnap retains the source relation link
+([OSM relation 102269](https://www.openstreetmap.org/relation/102269)), its
+GeoJSON SHA-256, and ODbL attribution. The AOI identifies where a reference is
+accepted; it does not add an imagery license or imply that all of the polygon
+is covered.
