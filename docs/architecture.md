@@ -1,11 +1,12 @@
 # Архитектура GeoSnap
 
-Актуально на 2026-08-31. Этот документ описывает реализованную архитектуру и
+Актуально на 2026-09-01. Этот документ описывает реализованную архитектуру и
 границы данных, а не обещанную точность продукта. Production gallery имеет
 реальные Mapillary/KartaView references, но измеренное покрытие остаётся
-частичным. Current selection (`megaloc` + weighted medoid +
-`0.5548002022369389`) прошёл real calibration и единственный frozen held-out
-test; результаты и существенные ограничения — в [evaluation_report.md](evaluation_report.md).
+частичным. Current frozen v2 selection — MegaLoc, exact `IndexFlatIP`, K=50,
+single query, weighted medoid, verification off и fail-closed threshold `1.0`.
+Wilson objective на calibration infeasible; результаты и ограничения — в
+[phase2_quality_improvement.md](phase2_quality_improvement.md).
 
 ## Граница production данных
 
@@ -15,11 +16,11 @@ test; результаты и существенные ограничения �
 10 компонентов, SHA-256
 `33b5dbf852cb94e5292e7848974fba78641dd76339cad142e73b7419b5db4a8a`.
 
-Текущий canonical exact-AOI manifest содержит 23 014 references (16 528
-Mapillary, 6 486 KartaView); final manifest после quality/dedup — 22 830
-(16 504 / 6 326). В fixed 20×20 grid заняты 87 из 400 cells (21,75 %), поэтому
-`city_id=moscow` обозначает область данных, а не гарантию локализации в любой
-точке города.
+Текущий v2 exact-AOI source manifest содержит 23 654 references (17 143
+Mapillary, 6 511 KartaView); leakage-resistant gallery/index содержит 19 524
+(16 605 / 2 919). В fixed 20×20 grid заняты 93 cells, только 30 dense-healthy,
+поэтому `city_id=moscow` обозначает область данных, а не гарантию локализации в
+любой точке города.
 
 MSLS, Wikimedia Commons и любые другие benchmark/training datasets разрешены
 только в research/evaluation workflow. Они не могут быть объединены с
@@ -164,13 +165,12 @@ orientation и RGB conversion.
   leakage-resistant московском наборе.
 
 Текущая confidence-функция помечена `interpretable-v1-uncalibrated`: её число
-не является калиброванной вероятностью. Но operating threshold для текущего
-Moscow index был честно выбран на calibration split: MegaLoc + weighted medoid
-использует `CONFIDENCE_THRESHOLD=0.5548002022369389`, что минимизировало
-false-confident errors >100 м до нуля перед максимизацией полезного ответа.
-Service не загружает calibration report неявно; deployment должен передать тот
-же порог явно. `uncertainty_radius_m` остаётся `null` до отдельной uncertainty
-calibration.
+не является калиброванной вероятностью. V2 calibration максимизировала answer
+rate при Wilson lower 95% >=90%, но только 16 threshold-eligible correct rows
+дали lower bound 80,64%. Objective infeasible, поэтому tracked frozen config
+использует fail-closed threshold `1.0`. Service и benchmark загружают один
+`configs/moscow_real_v2_frozen.json` и отвергают конфликтующие model/K/
+localizer/index values. `uncertainty_radius_m` остаётся `null`.
 
 API не возвращает абсолютные пути, download URL, токены или stack traces.
 Thumbnail разрешается сервером по `reference_id` из доверенного index sidecar;
@@ -180,25 +180,24 @@ Thumbnail разрешается сервером по `reference_id` из до�
 ## Модели и protocol выбора
 
 MegaLoc и DINOv2+SALAD имеют официальные pinned checkpoint-backed adapters и
-строят конечные L2-normalized descriptors размерности 8 448. На current real
-Moscow calibration SALAD выиграл raw retrieval, однако после safety-first
-confidence calibration MegaLoc дал больше correct accepted answers и лучший
-accepted-error tail. Поэтому **только для этого Moscow bundle** выбран
-`RETRIEVER=megaloc`; это не утверждение о превосходстве в других городах или
-на любом unthresholded metric. Лицензии, pin и redistribution consequences
-описаны в [licenses.md](licenses.md).
+строят L2-normalized descriptors размерности 8 448. На v2 calibration SALAD
+дал +5,37 pp R@20, но не прошёл major-region guard и остаётся evaluation-only
+по существующей checkpoint/GPL policy. MegaLoc five-crop не дал material gain
+и увеличил latency. Поэтому deployable selection остаётся single-query
+MegaLoc; это не утверждение о превосходстве в других городах или на любом
+unthresholded metric. Лицензии описаны в [licenses.md](licenses.md).
 
 Production retriever выбирается только следующим порядком:
 
-1. `make split-moscow` публикует disjoint Mapillary/KartaView
+1. `make split-moscow-v2` публикует disjoint Mapillary/KartaView
    gallery/calibration/test manifests с sequence, ID/source-ID, SHA-256 и pHash
    leakage checks.
-2. Оба retriever запускаются на **calibration** queries с threshold `0.0`.
-3. Из выбранного calibration report создаётся confidence threshold; затем
-   retriever, estimator и threshold замораживаются.
-4. `CONFIRM_FINAL_TEST=1 make benchmark-moscow-test` открывает held-out test
-   только для окончательного измерения.
-5. `make index-moscow-gallery` embeds и индексирует только gallery split.
+2. Predeclared candidates запускаются на **calibration** с threshold `0.0` и
+   full-rank diagnostics.
+3. Model, K, estimator, Wilson result, threshold и index metadata связываются
+   в tracked frozen runtime config.
+4. V2 held-out test уже открыт один раз; следующая tuning iteration требует v3.
+5. `make smoke-moscow-v2` проверяет тот же gallery-only index/runtime contract.
 
 Commons proxy и MSLS-derived benchmarks не могут выбрать production model:
 первый — hand-curated landmark-biased proxy, второй — внешний benchmark/training
@@ -206,11 +205,11 @@ corpus, а оба не являются Mapillary/KartaView Moscow deployment da
 
 ## Текущие границы готовности
 
-- Реальная two-source canonical gallery содержит 23 014, final gallery —
-  22 830 references; подробности — в [отчёте о данных](data_report.md).
-- Готовый real split содержит 18 821 gallery rows, 493 calibration queries и
-  507 held-out test queries. Он не означает full-city coverage: заняты лишь 87
-  из 400 fixed-grid cells.
+- V2 source содержит 23 654, gallery/index — 19 524 references; подробности —
+  в [отчёте о данных](data_report.md).
+- V2 split содержит 503 calibration и 497 once-opened test queries. Он не
+  означает full-city coverage: заняты 93/400 cells, dense-healthy только 30.
+- Frozen test answer rate равен 0%; публичный useful answer mode не обоснован.
 - OpenCV SIFT/LightGlue-compatible verification остаётся optional/default-off:
   real 100-query ablation дала нулевой all-query accuracy gain и median
   overhead +1 002 мс. Evidence и ограничения — в
@@ -218,6 +217,7 @@ corpus, а оба не являются Mapillary/KartaView Moscow deployment da
 - `uncertainty_radius_m` нельзя считать калиброванным только из confidence
   threshold; оно остаётся `null`, пока не появится отдельная проверенная
   uncertainty calibration.
-- Docker Compose configuration может быть проверена статически, но container
-  runtime на текущем host не подтверждён: Docker daemon недоступен. Перед
-  deployment обязателен `/ready` и настоящий `/localize` smoke на host с daemon.
+- Docker Compose configuration проверена статически; container runtime path
+  также прошёл `/ready` и настоящий `/localize` с текущими read-only
+  code/config/index. Чистый rebuild 17,5 GB image и публичная browser QA
+  остаются в Part 3.

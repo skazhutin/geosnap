@@ -14,23 +14,23 @@ gallery; они имеют только исследовательскую/evalu
 
 ## Состояние реальной московской галереи
 
-Граница — OSM relation `102269`, валидный `MultiPolygon` из 10 компонентов,
-SHA-256 `33b5dbf852cb94e5292e7848974fba78641dd76339cad142e73b7419b5db4a8a`.
-Из 26 954 физически валидных локальных изображений exact-AOI gate оставил
-23 014 canonical references: 16 528 Mapillary и 6 486 KartaView. После
-quality/dedup финальный manifest содержит 22 830 references:
+Актуальный candidate — versioned `moscow_real_v2`. Граница по-прежнему OSM
+relation `102269`, валидный `MultiPolygon` из 10 компонентов, SHA-256
+`33b5dbf852cb94e5292e7848974fba78641dd76339cad142e73b7419b5db4a8a`.
+Targeted acquisition и cross-version dedup дали 23 654 exact-AOI source rows;
+leakage-resistant production gallery содержит только Mapillary/KartaView:
 
-| Стадия | Всего | Mapillary | KartaView |
+| Артефакт v2 | Всего | Mapillary | KartaView |
 |---|---:|---:|---:|
-| Canonical exact-AOI gallery | 23 014 | 16 528 | 6 486 |
-| Final gallery после cleaning/quality/dedup | 22 830 | 16 504 | 6 326 |
+| Clean source manifest | 23 654 | 17 143 | 6 511 |
+| Gallery split / FAISS index | 19 524 | 16 605 | 2 919 |
 
-Hard validation и quality stage не удалили строки; локальный exact/pHash dedup
-удалил 184. В fixed 20×20 Moscow grid заняты 87 из 400 ячеек (21,75 %), а
-nearest-reference p50/p90 равны 28,74/154,17 м. Это измеренная частичная
-поддерживаемая область, а не плотное или полногородское покрытие. Полные
-счётчики, границы, provenance и ограничения — в
-[docs/data_report.md](docs/data_report.md).
+В fixed 20×20 grid заняты 93 ячейки, 30 удовлетворяют dense-healthy критерию;
+75 внутри/на границе AOI остаются пустыми при наличии source candidates, а в
+40 source data не обнаружены. Это измеренная частичная поддерживаемая область,
+не заявление о полногородском покрытии. Полная Phase 2 evidence chain — в
+[docs/phase2_quality_improvement.md](docs/phase2_quality_improvement.md),
+данные и исторический v1 — в [docs/data_report.md](docs/data_report.md).
 
 ## Что реализовано
 
@@ -81,56 +81,41 @@ make smoke PROFILE=sample RETRIEVER=megaloc TORCH_DEVICE=auto
 Он resumable; token передаётся только через окружение или локальный `.env`.
 
 ```bash
-# Нужен только при новом/обновлённом acquisition.
-CONFIRM_LARGE_RUN=1 make ingest-moscow
-
-# Публикация deployable Mapillary+KartaView gallery и leakage-resistant split.
-make prepare-moscow-gallery
-make split-moscow
-
-# Оба кандидата оцениваются только на calibration split. Target принудительно
-# использует confidence threshold 0.0, чтобы calibration не была скрыта
-# старым порогом abstention.
-make benchmark-moscow-models TORCH_DEVICE=mps EMBEDDING_BATCH_SIZE=1 EVAL_TOP_K=10
+make plan-moscow-v2-acquisition
+make expand-mapillary-v2
+make select-kartaview-v2
+make split-moscow-v2
+make coverage-moscow-v2
+make embed-moscow-v2 \
+  MOSCOW_V2_MODEL=megaloc \
+  MOSCOW_V2_REUSE_FROM=data/embeddings/moscow/megaloc \
+  TORCH_DEVICE=mps
+make benchmark-moscow-v2-calibration TORCH_DEVICE=mps
 ```
 
-После выбора retriever по **calibration** reports (не по Commons proxy) создайте
-confidence-calibration artifact, заморозьте retriever/estimator/threshold и
-лишь затем единственный раз откройте held-out test split:
+Протокол `configs/moscow_real_v2_experiment_protocol.json` был записан до
+экспериментов, а `configs/moscow_real_v2_frozen.json` — до единственного v2
+test run. Test уже открыт и **не должен запускаться повторно**. Calibration не
+нашла deployable candidate, прошедший material/stratum gate: SALAD дал
++5,37 п.п. R@20, но имеет региональные регрессии и остаётся evaluation-only;
+MegaLoc five-crop дал только +1,39 п.п. R@20 при 2,43× median latency.
 
-```bash
-make calibrate-moscow-confidence \
-  MOSCOW_EVAL_MODEL=<selected-model> \
-  MOSCOW_CALIBRATION_BENCHMARK_JSON=data/evaluation/moscow_real_v1/reports/<selected_model_with_underscores>_moscow_real_calibration.json
-
-CONFIRM_FINAL_TEST=1 make benchmark-moscow-test \
-  MOSCOW_EVAL_MODEL=<selected-model> \
-  MOSCOW_CONFIDENCE_THRESHOLD=<calibrated-threshold> \
-  TORCH_DEVICE=mps EMBEDDING_BATCH_SIZE=1 EVAL_TOP_K=10
-
-# Production index строится только из gallery split, не из calibration/test.
-make index-moscow-gallery RETRIEVER=<selected-model> \
-  TORCH_DEVICE=mps EMBEDDING_BATCH_SIZE=1
-```
-
-`data/evaluation/moscow_real_v1/` — локальный generated bundle. В текущем
-запуске он содержит 18 821 gallery rows, 493 calibration queries и 507 final
-held-out test queries; audit проверяет отсутствие межsplit совпадений по ID,
-source ID, file SHA-256, sequence и pHash-near дубликатам. Calibration выбрала
-`megaloc` + `weighted_medoid` +
-`CONFIDENCE_THRESHOLD=0.5548002022369389`: на единственном frozen test ответ
-выдан в 11 из 507 случаев (2,17%), при этом 0 выданных ответов ошиблись более
-чем на 100 м. Полная таблица и честные ограничения — в
+Явный production contract: MegaLoc, exact normalized `IndexFlatIP`, single
+query descriptor, K=50, weighted medoid, verification off. Wilson calibration
+не смогла доказать нижнюю 95% границу precision >=90%: 16/16 calibration
+answers дают только 80,64% lower bound. Поэтому frozen threshold равен `1.0`
+и fail-closed v2 test ответил 0/497. Это ограничение, а не safety success.
+Подробные calibration/test таблицы — в
 [docs/evaluation_report.md](docs/evaluation_report.md).
 
 ## API и frontend
 
-После `index-moscow-gallery` запускайте backend с выбранным retriever и явным
-калиброванным порогом — сервис не читает calibration report автоматически:
+V2 backend запускается только через frozen runtime contract; конфликтующий
+`RETRIEVER`, K, estimator, threshold или index metadata приводит к fail-fast:
 
 ```bash
-make api PROFILE=moscow CITY_ID=moscow RETRIEVER=megaloc \
-  CONFIDENCE_THRESHOLD=0.5548002022369389 TORCH_DEVICE=mps
+make api GEOSNAP_RUNTIME_CONFIG=configs/moscow_real_v2_frozen.json \
+  TORCH_DEVICE=mps
 ```
 
 Во втором терминале:
@@ -154,11 +139,10 @@ curl -sS -X POST http://localhost:8000/localize \
   -F 'image=@path/to/street.jpg'
 ```
 
-Для host smoke с настоящей held-out фотографией используйте, например:
+Для host smoke с реальным v2 index:
 
 ```bash
-make smoke PROFILE=moscow RETRIEVER=megaloc \
-  SMOKE_EXTRA_ARGS='--query-image /absolute/path/to/heldout.jpg --expected-status ok'
+make smoke-moscow-v2 TORCH_DEVICE=mps
 ```
 
 Поддерживаются JPEG/PNG/WebP. Upload проходит MIME/signature/decode,
@@ -167,51 +151,57 @@ decompression, dimensions, animation, EXIF orientation и RGB проверки.
 
 ## Выполненная host-проверка
 
-На 2026-08-31 host runtime был проверен с готовым real MegaLoc Moscow index:
+На 2026-09-01 host runtime проверен с frozen v2 MegaLoc index:
 
-- `/health` и `/ready` вернули healthy/ready состояние;
-- настоящий held-out Mapillary JPEG прошёл через `POST /localize` со статусом
-  `ok`, реальной FAISS галереей и атрибуцией Mapillary;
-- frontend upload проверен на desktop и mobile: карта, geographic hypotheses,
-  source/license/author links и thumbnails пришли из живого API, без mock;
-- другой реальный held-out JPEG отрисовал явный `low_confidence` abstention,
-  а не выдуманную точку; browser console не показал errors.
+- `/ready` вернул HTTP 200 после загрузки модели, 19 524-vector FAISS и metadata;
+- реальный `POST /localize` на indexed reference вернул тот же reference в
+  top-1 и ожидаемый `low_confidence` при fail-closed threshold `1.0`;
+- embedding/retrieval/total заняли 99,52/44,29/204,48 мс;
+- maximum resident set size smoke process tree — 2 318 712 832 bytes;
+- persisted `index.faiss` — 659 755 053 bytes, SHA-256
+  `2c08bc294556c29ea1eeec96d4b80abefe4b3669382c16c5fae8548274f563e5`.
 
-Это host verification, не отменяющая низкий answer rate frozen test и ограничение
-покрытия. Docker daemon на этой машине недоступен, поэтому container-runtime
-smoke ещё должен быть выполнен на host с работающим daemon.
+Это wiring/artifact smoke, не accuracy measurement. Историческая 2026-08-31
+frontend-проверка v1 сохраняется в git history; новая публичная browser QA
+относится к Part 3. Отдельный container smoke также подтверждён ниже.
 
 ## Evaluation scope
 
-Real Moscow evaluation разделяет provider sequences между gallery и query,
+V2 real Moscow evaluation разделяет provider sequences между gallery и query,
 требует gallery positive в 100 м, применяет pHash leakage checks, минимум 20 м
-между query и 100 м calibration/test geographic embargo. Это рабочая база для
-выбора модели, оценки abstention и калибровки confidence; одна только
-confidence calibration не делает `uncertainty_radius_m` калиброванным.
+между query и 250 м calibration/test geographic embargo. Audit подтвердил ноль
+пересечений, но measured retrieval и Wilson limitation не позволяют включить
+полезный public answer mode. Одна confidence calibration также не делает
+`uncertainty_radius_m` калиброванным.
 
 Wikimedia Commons proxy и любые MSLS-derived artifacts остаются
 research/evaluation-only. Commons — маленький hand-curated landmark-biased
 набор, а MSLS — benchmark/training data; ни один из них не является московской
 street-view production gallery, не участвует в `prepare-moscow-gallery` или
 `index-moscow-gallery` и не обосновывает city-wide product claim. Реальный
-выбор модели и frozen test описаны в
-[docs/evaluation_report.md](docs/evaluation_report.md); геометрическая
+выбор модели и single frozen test описаны в
+[docs/phase2_quality_improvement.md](docs/phase2_quality_improvement.md); геометрическая
 verification ablation — в [docs/verification_report.md](docs/verification_report.md).
 
 ## Docker Compose
 
-Сначала должен существовать совместимый host-built index в
-`data/indexes/moscow/<selected-model>/`. Проверка конфигурации:
+Сначала должен существовать совместимый host-built v2 index в
+`data/indexes/moscow_real_v2/megaloc/`. Проверка конфигурации:
 
 ```bash
 make compose-config
 docker compose --env-file .env config --quiet
 ```
 
-Полный container runtime smoke на этом host пока не выполнен: Docker CLI и
-Compose config доступны, но Docker daemon недоступен. Поэтому это ограничение
-не скрывается под `/health` или формальной compose-проверкой; перед deployment
-нужно выполнить `/ready` и real `/localize` на машине с запущенным daemon.
+Docker daemon на этом host доступен. Временный backend container на базе
+существующего `geosnap-backend:latest`, с текущими code/config/index,
+подключёнными read-only, успешно прошёл `/ready` (HTTP 200) и настоящий
+multipart `POST /localize` (HTTP 200): indexed reference остался top-1,
+статус ожидаемо `low_confidence`, 50 matches, diagnostics
+1099,52/122,60/1418,45 мс embedding/retrieval/total на CPU. Snapshot памяти
+container после запроса — 3,487 GiB. Чистый rebuild 17,5 GB image намеренно
+отложен до Part 3; этот smoke подтверждает container runtime path, но не
+reproducibility свежесобранного image и не accuracy.
 
 PostgreSQL/PostGIS остаётся опциональным metadata layer:
 
@@ -239,15 +229,18 @@ Mapillary/KartaView условия, OSM/tiles и model licenses — в
 
 Ограничения, которые нельзя маскировать:
 
-- 87 из 400 контрольных ячеек заняты, поэтому многие районы/виды/сезоны/ракурсы
-  не поддержаны;
-- модель и confidence threshold должны быть выбраны по real calibration, а
-  final test нельзя использовать для tuning;
+- 93 из 400 контрольных ячеек заняты и только 30 dense-healthy, поэтому многие
+  районы/виды/сезоны/ракурсы не поддержаны;
+- v2 final test уже использован один раз и не может применяться для tuning или
+  повторного frozen claim; следующая итерация требует v3 split;
+- Wilson objective на v2 calibration infeasible; threshold `1.0` намеренно
+  делает текущий public candidate fail-closed;
 - verification остаётся optional/default-off: real 100-query Moscow ablation
   не дала accuracy/answer-rate gain и добавила median +1 002 мс;
 - OSM standard tiles подходят для лёгкого demo, не для high-volume public
   deployment;
-- Docker runtime на текущей машине ещё не проверен из-за недоступного daemon.
+- Container runtime path проверен с текущими read-only code/config/index, но
+  чистый rebuild 17,5 GB image и публичная browser QA остаются в Part 3.
 
 ## Canonical SoT integrity
 

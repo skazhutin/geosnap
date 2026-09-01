@@ -634,6 +634,7 @@ def _assign_sequences(
     *,
     seed: int,
     calibration_test_embargo_m: float,
+    representative_balance: bool = False,
 ) -> tuple[dict[SequenceKey, str], dict[SequenceKey, str], dict[str, Any]]:
     """Assign connected geographic components wholly to calibration or test."""
 
@@ -700,6 +701,10 @@ def _assign_sequences(
     row_counts = {"calibration": 0, "test": 0}
     sequence_counts = {"calibration": 0, "test": 0}
     area_counts = {"calibration": 0, "test": 0}
+    feature_counts: dict[str, Counter[str]] = {
+        "calibration": Counter(),
+        "test": Counter(),
+    }
     component_rows: dict[SequenceKey, list[int]] = {
         root: [index for sequence in sequences for index in by_sequence[sequence]]
         for root, sequences in components.items()
@@ -708,10 +713,58 @@ def _assign_sequences(
         sequences = components[root]
         indices = component_rows[root]
         areas = {str(frame.at[index, "evaluation_area_h3"]) for index in indices}
+        component_features: Counter[str] = Counter()
+        if representative_balance:
+            for index in indices:
+                source = _text(frame.at[index, "source"]).lower() or "unknown"
+                component_features[f"provider:{source}"] += 1
+                component_features[f"area:{frame.at[index, 'evaluation_area_h3']}"] += 1
+                try:
+                    long_side = max(int(frame.at[index, "width"]), int(frame.at[index, "height"]))
+                except (KeyError, TypeError, ValueError):
+                    resolution = "unknown"
+                else:
+                    resolution = "lt1600" if long_side < 1600 else ("1600_2499" if long_side < 2500 else "ge2500")
+                component_features[f"resolution:{resolution}"] += 1
         if position == 0:
             split = "calibration"
         elif position == 1:
             split = "test"
+        elif representative_balance:
+
+            def balance_score(
+                candidate_split: str,
+                *,
+                current_features: Counter[str] = component_features,
+                current_indices: tuple[int, ...] = tuple(indices),
+                current_root: SequenceKey = root,
+            ) -> tuple[float, int, int, int, str]:
+                other_split = "test" if candidate_split == "calibration" else "calibration"
+                feature_keys = set(feature_counts[candidate_split]) | set(feature_counts[other_split]) | set(
+                    current_features
+                )
+                feature_imbalance = 0.0
+                for key in feature_keys:
+                    left = feature_counts[candidate_split][key] + current_features[key]
+                    right = feature_counts[other_split][key]
+                    feature_imbalance += abs(left - right) / max(left + right, 1)
+                row_left = row_counts[candidate_split] + len(current_indices)
+                row_right = row_counts[other_split]
+                row_imbalance = abs(row_left - row_right) / max(row_left + row_right, 1)
+                return (
+                    row_imbalance + feature_imbalance / max(len(feature_keys), 1),
+                    row_counts[candidate_split],
+                    sequence_counts[candidate_split],
+                    area_counts[candidate_split],
+                    _stable_score(
+                        seed,
+                        "assign-representative-component",
+                        _sequence_label(current_root),
+                        candidate_split,
+                    ),
+                )
+
+            split = min(("calibration", "test"), key=balance_score)
         else:
             split = min(
                 ("calibration", "test"),
@@ -730,10 +783,13 @@ def _assign_sequences(
         row_counts[split] += len(indices)
         sequence_counts[split] += len(sequences)
         area_counts[split] += len(areas)
+        feature_counts[split].update(component_features)
     diagnostics: dict[str, Any] = {
         "component_count": len(components),
         "component_row_counts": sorted(len(indices) for indices in component_rows.values()),
         "component_sequence_counts": sorted(len(sequences) for sequences in components.values()),
+        "representative_balance": representative_balance,
+        "feature_counts": {split: dict(sorted(counts.items())) for split, counts in feature_counts.items()},
     }
     return assignment, geo_group_by_sequence, diagnostics
 
@@ -834,6 +890,7 @@ def _finalize_query_selection(
     positive_distance_m: float,
     phash_distance_threshold: int,
     calibration_test_embargo_m: float,
+    representative_balance: bool = False,
 ) -> tuple[
     list[int],
     list[int],
@@ -887,6 +944,7 @@ def _finalize_query_selection(
             initial_sequences,
             seed=seed,
             calibration_test_embargo_m=calibration_test_embargo_m,
+            representative_balance=representative_balance,
         )
         bounded_order = _bounded_query_order(frame, sampled, assignment, seed=seed)
         selected, query_dedup = _deduplicate_query_union(
@@ -1366,6 +1424,7 @@ def run(
     minimum_gallery_fraction: float = DEFAULT_MINIMUM_GALLERY_FRACTION,
     holdout_candidate_multiplier: int = DEFAULT_HOLDOUT_CANDIDATE_MULTIPLIER,
     replace_existing: bool = False,
+    representative_balance: bool = False,
 ) -> dict[str, Any]:
     """Create gallery/calibration/test Parquets and a fail-closed audit."""
 
@@ -1438,6 +1497,7 @@ def run(
         positive_distance_m=positive_distance_m,
         phash_distance_threshold=phash_distance_threshold,
         calibration_test_embargo_m=calibration_test_embargo_m,
+        representative_balance=representative_balance,
     )
     calibration_indices = [index for index in selected if assignment[_sequence_key(frame, index)] == "calibration"]
     test_indices = [index for index in selected if assignment[_sequence_key(frame, index)] == "test"]
@@ -1579,6 +1639,7 @@ def run(
         "minimum_gallery_areas": minimum_gallery_areas,
         "minimum_gallery_fraction": minimum_gallery_fraction,
         "holdout_candidate_multiplier": holdout_candidate_multiplier,
+        "representative_balance": representative_balance,
     }
     bundle_fingerprint = _bundle_fingerprint(
         input_manifest_sha256=input_manifest_sha256,
@@ -1779,6 +1840,11 @@ def main() -> None:
         action="store_true",
         help="Replace the entire prior split bundle after a verified staged build",
     )
+    parser.add_argument(
+        "--representative-balance",
+        action="store_true",
+        help="balance calibration/test provider, H3-area, and resolution distributions for v2",
+    )
     args = parser.parse_args()
     run(
         input_manifest=args.manifest,
@@ -1798,6 +1864,7 @@ def main() -> None:
         minimum_gallery_fraction=args.minimum_gallery_fraction,
         holdout_candidate_multiplier=args.holdout_candidate_multiplier,
         replace_existing=args.replace_existing,
+        representative_balance=args.representative_balance,
     )
 
 

@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "configuration_id": "moscow-real-v2-megaloc-k50-fail-closed",
+  "status": "frozen_before_final_test",
+  "frozen_at": "2026-09-01T15:18:00Z",
+  "dataset": {
+    "bundle": "data/evaluation/moscow_real_v2",
+    "bundle_fingerprint": "78cccca3f410f318673d99f1b3dcb303b4de678c4799821e0ff575a379248862",
+    "gallery_manifest": "data/evaluation/moscow_real_v2/gallery.parquet",
+    "gallery_sha256": "7de1c9aa37326a388743e8accf411d71c07631dcc2d9e6ae6c83891d3e9e1e76",
+    "calibration_sha256": "4e92d5e229dae00ea9a7117eb3765f23247d6c77ef82a837f24c9efe6923b5a4",
+    "sealed_test_sha256": "b96cb9bb39908d357c4cf24a0a366c6e1dc1f8f953323d5ce3185cc0a8a94bdf"
+  },
+  "retriever": {
+    "name": "megaloc",
+    "repository": "https://github.com/gmberton/MegaLoc",
+    "revision": "5fe0dd697c4a70ba3e23607f6716ab3c606b16db",
+    "checkpoint": "huggingface:gberton/MegaLoc@37bb43d65dd6388d1578052de5eb0bcdceb497e7/model.safetensors",
+    "checkpoint_sha256": "d4f9f2bcb60018f91eb6a8e061ed054fd55654e10c2569cf13841ea986ffb4f8",
+    "preprocessing": "official-imagenet-normalize-then-resize-322-v1",
+    "descriptor_dimension": 8448,
+    "descriptor_dtype": "float32",
+    "normalized": true
+  },
+  "embedding": {
+    "directory": "data/embeddings/moscow_real_v2/megaloc",
+    "artifact_generation": "3f47f72f674840f4a0fe59bc8e8e32da",
+    "build_metadata_sha256": "adf31f5de8689fffc57b004d970b568dd325539f4d3efa41a3d67cf32e53269c",
+    "input_signature": "573d582e6127568e00cfee69865bb6465f99a8266f08cc3e75a1611c92ad0ac9",
+    "descriptors_sha256": "2954ae332f802b25d52daafa3e4bb4e5d2eb3a4dcaae245a6e9ba225338057a9",
+    "descriptor_count": 19524,
+    "failure_count": 0
+  },
+  "retrieval": {
+    "index_type": "faiss.IndexFlatIP",
+    "similarity": "cosine_via_inner_product",
+    "top_k": 50,
+    "query_aggregation": "single",
+    "reranker": null
+  },
+  "localization": {
+    "cluster_radius_m": 100.0,
+    "max_cluster_diameter_m": 150.0,
+    "estimator": "weighted_medoid",
+    "confidence_threshold": 1.0,
+    "out_of_coverage_similarity": 0.15,
+    "confident_similarity": 0.65,
+    "score_temperature": 0.08,
+    "good_geographic_margin": 0.08,
+    "minimum_cluster_mass": 0.45,
+    "minimum_cluster_mass_margin": 0.1,
+    "minimum_cluster_candidates": 2,
+    "good_hypothesis_separation_m": 500.0
+  },
+  "confidence": {
+    "method": "maximize_answer_rate_subject_to_wilson_lower_95_gte_0.90",
+    "objective_feasible_on_calibration": false,
+    "fail_closed_policy_applied": true,
+    "calibration_report": "data/evaluation/moscow_real_v2/reports/frozen_megaloc_k50_confidence_calibration.json",
+    "calibration_report_sha256": "45781fc362b9e8ddd11489d938eafde2a2c28269f49aff2ba1ea7a98453e89e2"
+  },
+  "verification": {
+    "enabled": false,
+    "backend": "opencv_sift",
+    "verify_top_k": 10,
+    "geometric_weight": 0.35
+  },
+  "safety_gates": {
+    "production_sources": [
+      "mapillary",
+      "kartaview"
+    ],
+    "exact_aoi_required": true,
+    "gallery_query_sequence_disjoint": true,
+    "uncertainty_radius_calibrated": false,
+    "final_test_maximum_runs": 1
+  },
+  "index": {
+    "directory": "data/indexes/moscow_real_v2/megaloc",
+    "index_id": "moscow-real-v2",
+    "city_id": "moscow",
+    "artifact_generation": "b14522a19b6b4c4da029e53816cf671a",
+    "index_metadata_sha256": "24b0213bda854cdc253d1c11cecc41ae1f5408619007b586720adadf7a06dd46",
+    "index_faiss_sha256": "2c08bc294556c29ea1eeec96d4b80abefe4b3669382c16c5fae8548274f563e5",
+    "gallery_size": 19524
+  },
+  "selection_evidence": {
+    "protocol": "configs/moscow_real_v2_experiment_protocol.json",
+    "protocol_sha256": "9a8c31f1f4e18abeb55336bce5e547353487d726c0f54b76bd1fee89fcbd4055",
+    "candidate_selection_sha256": "1c5345dbf72225676e8f42dd0068d3cf189ed18a656632ee686e601b9f6b5f36",
+    "depth_selection_sha256": "e91b0c7756c748734c503bbfe3821092d12a64c016773f568450dddbde0a628e",
+    "selected_candidate": "baseline_megaloc_weighted_medoid",
+    "material_improvement_gate_passed": false
+  }
+}

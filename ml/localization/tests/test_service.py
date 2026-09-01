@@ -15,6 +15,7 @@ from ml.localization.service import (
     create_localization_service,
 )
 from ml.retrieval.testing import DeterministicFixtureRetriever
+from ml.runtime_config import RuntimeConfigError, sha256_file
 from ml.verification import RerankResult, VerifiedCandidate
 
 
@@ -188,6 +189,70 @@ def test_factory_parses_faiss_process_isolation_strictly(monkeypatch: pytest.Mon
 
     monkeypatch.setenv("FAISS_PROCESS_ISOLATION", "sometimes")
     with pytest.raises(ValueError, match="FAISS_PROCESS_ISOLATION"):
+        create_localization_service()
+
+
+def test_factory_uses_frozen_benchmark_runtime_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ``make`` exports its legacy service defaults. They are intentionally not
+    # part of this fixture: the frozen contract below is the source of truth.
+    monkeypatch.delenv("RETRIEVAL_TOP_K", raising=False)
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    metadata = index_dir / "index_metadata.json"
+    metadata.write_text('{"fixture": true}\n', encoding="utf-8")
+    runtime = tmp_path / "frozen.json"
+    runtime.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "frozen_before_final_test",
+                "retriever": {"name": "megaloc"},
+                "retrieval": {"top_k": 50, "query_aggregation": "five_crop_85"},
+                "localization": {
+                    "estimator": "weighted_medoid",
+                    "confidence_threshold": 0.81,
+                    "cluster_radius_m": 100.0,
+                    "max_cluster_diameter_m": 150.0,
+                    "out_of_coverage_similarity": 0.15,
+                    "confident_similarity": 0.65,
+                    "good_geographic_margin": 0.08,
+                    "minimum_cluster_mass": 0.45,
+                    "minimum_cluster_mass_margin": 0.10,
+                    "minimum_cluster_candidates": 2,
+                    "good_hypothesis_separation_m": 500.0,
+                    "score_temperature": 0.08,
+                },
+                "verification": {"enabled": False},
+                "dataset": {"gallery_sha256": "unused-by-service"},
+                "index": {
+                    "directory": str(index_dir),
+                    "city_id": "moscow",
+                    "index_id": "moscow-real-v2",
+                    "index_metadata_sha256": sha256_file(metadata),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GEOSNAP_RUNTIME_CONFIG", str(runtime))
+
+    service = create_localization_service()
+
+    assert service.top_k == 50
+    assert service.query_aggregation == "five_crop_85"
+    assert service.expected_city_id == "moscow"
+    assert service.expected_index_id == "moscow-real-v2"
+    assert service.localizer.config.confidence_threshold == 0.81
+    assert service.localizer.config.estimator.value == "weighted_medoid"
+    assert service.localizer.config.score_temperature == 0.08
+
+    monkeypatch.setenv("CONFIDENCE_THRESHOLD", "0.810")
+    assert create_localization_service().localizer.config.confidence_threshold == 0.81
+
+    monkeypatch.setenv("RETRIEVAL_TOP_K", "20")
+    with pytest.raises(RuntimeConfigError, match="conflicts with frozen"):
         create_localization_service()
 
 

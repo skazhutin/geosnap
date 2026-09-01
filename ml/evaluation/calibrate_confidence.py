@@ -25,6 +25,7 @@ REPORT_SCHEMA_VERSION = 1
 ERROR_THRESHOLDS_M = (25, 50, 100)
 THRESHOLD_REASON = "confidence_below_threshold"
 EXPECTED_CALIBRATION_MANIFEST = "calibration_queries.parquet"
+DEFAULT_WILSON_Z_95 = 1.959963984540054
 
 
 class ConfidenceCalibrationError(RuntimeError):
@@ -328,6 +329,9 @@ def _curve_row(
     false_confident = [
         row for row in answered if float(row["error_m"]) > 100.0
     ]
+    correct_within_100m = len(answered) - len(false_confident)
+    wilson_lower, wilson_upper = _wilson_interval(correct_within_100m, len(answered))
+    accepted_errors = sorted(float(row["error_m"]) for row in answered)
     unconditional: dict[str, float] = {}
     conditional: dict[str, float] = {}
     for distance in ERROR_THRESHOLDS_M:
@@ -348,6 +352,14 @@ def _curve_row(
         "eligible_query_count": len(eligible),
         "answered_count": len(answered),
         "answer_rate": len(answered) / total,
+        "correct_within_100m_count": correct_within_100m,
+        "conditional_accuracy_within_100m_wilson_lower_95": wilson_lower,
+        "conditional_accuracy_within_100m_wilson_interval_95": [wilson_lower, wilson_upper],
+        "accepted_error_m": {
+            "median": _percentile(accepted_errors, 50),
+            "p90": _percentile(accepted_errors, 90),
+            "p95": _percentile(accepted_errors, 95),
+        },
         "conditional_accuracy_within_m": conditional,
         "unconditional_accuracy_within_m": unconditional,
         "false_confident_errors": {
@@ -360,6 +372,82 @@ def _curve_row(
             ),
             "errors": failures,
         },
+    }
+
+
+def _wilson_lower_bound(successes: int, trials: int, *, z: float = DEFAULT_WILSON_Z_95) -> float | None:
+    """Return the one-sided lower endpoint of the conventional 95% Wilson interval."""
+
+    return _wilson_interval(successes, trials, z=z)[0]
+
+
+def _wilson_interval(
+    successes: int, trials: int, *, z: float = DEFAULT_WILSON_Z_95
+) -> tuple[float | None, float | None]:
+    if trials == 0:
+        return None, None
+    if successes < 0 or successes > trials:
+        raise ValueError("successes must be in [0, trials]")
+    probability = successes / trials
+    z_squared = z * z
+    denominator = 1.0 + z_squared / trials
+    center = probability + z_squared / (2.0 * trials)
+    margin = z * math.sqrt((probability * (1.0 - probability) + z_squared / (4.0 * trials)) / trials)
+    return (center - margin) / denominator, (center + margin) / denominator
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    position = (len(values) - 1) * percentile / 100.0
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return float(values[lower])
+    fraction = position - lower
+    return float(values[lower] * (1.0 - fraction) + values[upper] * fraction)
+
+
+def _confidence_quality(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    eligible = [row for row in rows if row["eligible_for_thresholding"]]
+    if not eligible:
+        return {"population": "threshold_eligible_queries", "count": 0, "brier": None, "ece_10_bin": None}
+    probabilities = [float(row["confidence"]) for row in eligible]
+    outcomes = [float(row["error_m"]) <= 100.0 for row in eligible]
+    brier = sum((probability - float(outcome)) ** 2 for probability, outcome in zip(probabilities, outcomes, strict=True)) / len(
+        eligible
+    )
+    reliability: list[dict[str, Any]] = []
+    ece = 0.0
+    for lower_index in range(10):
+        lower = lower_index / 10.0
+        upper = (lower_index + 1) / 10.0
+        selected = [
+            index
+            for index, probability in enumerate(probabilities)
+            if lower <= probability < upper or (upper == 1.0 and probability == 1.0)
+        ]
+        if not selected:
+            continue
+        mean_confidence = sum(probabilities[index] for index in selected) / len(selected)
+        accuracy = sum(outcomes[index] for index in selected) / len(selected)
+        ece += len(selected) / len(eligible) * abs(mean_confidence - accuracy)
+        reliability.append(
+            {
+                "min_confidence": lower,
+                "max_confidence": upper,
+                "count": len(selected),
+                "mean_confidence": mean_confidence,
+                "accuracy_within_100m": accuracy,
+            }
+        )
+    return {
+        "population": "threshold_eligible_queries",
+        "count": len(eligible),
+        "outcome": "localization_error<=100m",
+        "brier": brier,
+        "ece_10_bin": ece,
+        "reliability": reliability,
     }
 
 
@@ -378,6 +466,7 @@ def calibrate_confidence_payload(
     benchmark: Mapping[str, Any],
     *,
     allow_base_threshold: bool = False,
+    minimum_conditional_accuracy_100m_wilson_lower_95: float | None = None,
 ) -> dict[str, Any]:
     """Calibrate one threshold without reading images or any test artifact."""
 
@@ -402,7 +491,44 @@ def calibrate_confidence_payload(
         {0.0, 1.0, *(float(row["confidence"]) for row in rows)}
     )
     curve = [_curve_row(rows, threshold) for threshold in candidates]
-    chosen = min(curve, key=_selection_key)
+    if minimum_conditional_accuracy_100m_wilson_lower_95 is None:
+        chosen = min(curve, key=_selection_key)
+        qualified = curve
+        objective = {
+            "name": "legacy_safety_first_lexicographic",
+            "feasible": True,
+            "minimum_conditional_accuracy_100m_wilson_lower_95": None,
+        }
+    else:
+        target = float(minimum_conditional_accuracy_100m_wilson_lower_95)
+        if not 0.0 <= target <= 1.0:
+            raise ValueError("minimum Wilson lower bound must be in [0, 1]")
+        qualified = [
+            row
+            for row in curve
+            if row["conditional_accuracy_within_100m_wilson_lower_95"] is not None
+            and float(row["conditional_accuracy_within_100m_wilson_lower_95"]) >= target
+        ]
+        chosen = (
+            max(
+                qualified,
+                key=lambda row: (
+                    float(row["answer_rate"]),
+                    float(row["conditional_accuracy_within_m"]["100"]),
+                    -float(row["threshold"]),
+                ),
+            )
+            if qualified
+            else None
+        )
+        objective = {
+            "name": "maximize_answer_rate_subject_to_wilson_precision_floor",
+            "feasible": chosen is not None,
+            "minimum_conditional_accuracy_100m_wilson_lower_95": target,
+            "confidence_level": 0.95,
+            "wilson_z": DEFAULT_WILSON_Z_95,
+            "qualified_candidate_count": len(qualified),
+        }
     queries = _query_manifest(benchmark)
     dataset = _mapping(benchmark.get("dataset"), "dataset")
     model = _mapping(benchmark.get("model"), "model")
@@ -437,6 +563,7 @@ def calibrate_confidence_payload(
                 "unconditional": "all_calibration_queries",
                 "conditional": "answered_calibration_queries",
             },
+            "objective": objective,
         },
         "eligibility": {
             "eligible_query_count": sum(
@@ -449,10 +576,11 @@ def calibrate_confidence_payload(
         },
         "candidate_count": len(curve),
         "curve": curve,
-        "chosen_threshold": chosen["threshold"],
+        "confidence_quality": _confidence_quality(rows),
+        "chosen_threshold": None if chosen is None else chosen["threshold"],
         "chosen": chosen,
         "zero_false_confident_achieved": (
-            chosen["false_confident_errors"]["count"] == 0
+            None if chosen is None else chosen["false_confident_errors"]["count"] == 0
         ),
     }
 
@@ -463,7 +591,28 @@ def _percent(value: Any) -> str:
 
 def _markdown_report(payload: Mapping[str, Any]) -> str:
     source = _mapping(payload["source_benchmark"], "source_benchmark")
-    chosen = _mapping(payload["chosen"], "chosen")
+    raw_chosen = payload["chosen"]
+    if raw_chosen is None:
+        objective = _mapping(_mapping(payload["policy"], "policy")["objective"], "policy.objective")
+        return "\n".join(
+            [
+                "# Moscow confidence-threshold calibration",
+                "",
+                "> This report uses calibration queries only. No test result is read or used for threshold selection.",
+                "",
+                "## No feasible operating point",
+                "",
+                f"No threshold achieved the required 95% Wilson lower bound of "
+                f"{float(objective['minimum_conditional_accuracy_100m_wilson_lower_95']):.2%} "
+                "for conditional accuracy within 100 m. The system must not claim a calibrated threshold from this run.",
+                "",
+                f"- Model: `{source.get('model_name')}`",
+                f"- Calibration query manifest: `{source.get('query_manifest_path')}`",
+                f"- Query count: {source['query_count']}",
+                "",
+            ]
+        )
+    chosen = _mapping(raw_chosen, "chosen")
     chosen_unconditional = _mapping(
         chosen["unconditional_accuracy_within_m"], "chosen.unconditional"
     )
@@ -498,6 +647,8 @@ def _markdown_report(payload: Mapping[str, Any]) -> str:
         "|---|---:|",
         f"| Answered / all | {chosen['answered_count']} / {chosen['query_count']} |",
         f"| Answer rate | {_percent(chosen['answer_rate'])} |",
+        f"| 95% Wilson lower bound, conditional <=100 m | "
+        f"{_percent(chosen['conditional_accuracy_within_100m_wilson_lower_95'])} |",
     ]
     for distance in ERROR_THRESHOLDS_M:
         key = str(distance)
@@ -571,6 +722,7 @@ def calibrate_confidence(
     *,
     stem: str = "moscow_confidence_calibration",
     allow_base_threshold: bool = False,
+    minimum_conditional_accuracy_100m_wilson_lower_95: float | None = None,
 ) -> tuple[dict[str, Any], Path, Path]:
     input_path = Path(benchmark_json).expanduser().resolve()
     if not input_path.is_file():
@@ -583,7 +735,11 @@ def calibrate_confidence(
         ) from exc
     benchmark = _mapping(loaded, "benchmark report")
     payload = calibrate_confidence_payload(
-        benchmark, allow_base_threshold=allow_base_threshold
+        benchmark,
+        allow_base_threshold=allow_base_threshold,
+        minimum_conditional_accuracy_100m_wilson_lower_95=(
+            minimum_conditional_accuracy_100m_wilson_lower_95
+        ),
     )
     payload["source_benchmark"]["report_path"] = str(input_path)
     payload["source_benchmark"]["report_sha256"] = _sha256_file(input_path)
@@ -608,25 +764,37 @@ def main() -> None:
         action="store_true",
         help="explicitly allow a benchmark generated with a non-zero base threshold",
     )
+    parser.add_argument(
+        "--minimum-conditional-accuracy-100m-wilson-lower-95",
+        type=float,
+        help=(
+            "maximize answer rate subject to this 95%% Wilson lower-bound floor; "
+            "report no feasible operating point if none qualifies"
+        ),
+    )
     args = parser.parse_args()
     payload, json_path, markdown_path = calibrate_confidence(
         args.benchmark_json,
         args.output_dir,
         stem=args.report_stem,
         allow_base_threshold=args.allow_base_threshold,
+        minimum_conditional_accuracy_100m_wilson_lower_95=(
+            args.minimum_conditional_accuracy_100m_wilson_lower_95
+        ),
     )
     print(
         json.dumps(
             {
                 "calibration_kind": payload["calibration_kind"],
                 "chosen_threshold": payload["chosen_threshold"],
-                "answer_rate": payload["chosen"]["answer_rate"],
-                "unconditional_accuracy_within_m": payload["chosen"][
-                    "unconditional_accuracy_within_m"
-                ],
-                "false_confident_error_count": payload["chosen"][
-                    "false_confident_errors"
-                ]["count"],
+                "objective_feasible": payload["policy"]["objective"]["feasible"],
+                "answer_rate": None if payload["chosen"] is None else payload["chosen"]["answer_rate"],
+                "unconditional_accuracy_within_m": (
+                    None if payload["chosen"] is None else payload["chosen"]["unconditional_accuracy_within_m"]
+                ),
+                "false_confident_error_count": (
+                    None if payload["chosen"] is None else payload["chosen"]["false_confident_errors"]["count"]
+                ),
                 "json_report": str(json_path),
                 "markdown_report": str(markdown_path),
             },

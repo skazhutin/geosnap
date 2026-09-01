@@ -163,7 +163,12 @@ def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     os.replace(temporary, path)
 
 
-def _input_signature(records: Sequence[ReferenceImage], retriever: BaseRetriever) -> str:
+def _input_signature(
+    records: Sequence[ReferenceImage],
+    retriever: BaseRetriever,
+    *,
+    reuse_identity: Mapping[str, Any] | None = None,
+) -> str:
     digest = hashlib.sha256()
     digest.update(f"embedding-schema:{SCHEMA_VERSION}\n".encode())
     retriever_metadata = retriever.metadata.to_dict()
@@ -176,6 +181,12 @@ def _input_signature(records: Sequence[ReferenceImage], retriever: BaseRetriever
         ).encode("utf-8")
     )
     digest.update(b"\n")
+    if reuse_identity is not None:
+        digest.update(b"reuse:")
+        digest.update(
+            json.dumps(_json_safe(reuse_identity), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        digest.update(b"\n")
     for record in records:
         digest.update(record.reference_id.encode("utf-8"))
         digest.update(b"\0")
@@ -210,6 +221,7 @@ class EmbeddingJob:
         *,
         batch_size: int = 32,
         progress_callback: Callable[[EmbeddingProgress], None] | None = None,
+        reuse_from: str | Path | None = None,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -217,6 +229,7 @@ class EmbeddingJob:
         self.output_dir = Path(output_dir)
         self.batch_size = batch_size
         self.progress_callback = progress_callback
+        self.reuse_from = None if reuse_from is None else Path(reuse_from)
 
     @property
     def _checkpoint_dir(self) -> Path:
@@ -237,7 +250,51 @@ class EmbeddingJob:
             "chunks": [],
             "failures": [],
             "successful_count": 0,
+            "reused_descriptor_count": 0,
+            "computed_descriptor_count": 0,
         }
+
+    def _load_reusable_descriptors(
+        self,
+        records: Sequence[ReferenceImage],
+    ) -> tuple[np.ndarray | None, dict[str, int], dict[str, Any] | None]:
+        if self.reuse_from is None:
+            return None, {}, None
+        descriptors, ids, references, metadata = load_embedding_artifacts(self.reuse_from)
+        expected_model = dict(self.retriever.metadata.to_dict())
+        actual_model = dict(metadata.get("retriever", {}))
+        expected_model.pop("device", None)
+        actual_model.pop("device", None)
+        if actual_model != expected_model:
+            raise EmbeddingJobError("reusable embedding artifact does not match the loaded retriever")
+
+        base_rows = {reference_id: row for reference_id, row in zip(ids, references, strict=True)}
+        reusable: dict[str, int] = {}
+        row_by_id = {reference_id: row for row, reference_id in enumerate(ids)}
+        for record in records:
+            prior = base_rows.get(record.reference_id)
+            if prior is None:
+                continue
+            if Path(str(prior.get("image_path", ""))).resolve() != record.image_path.resolve():
+                continue
+            prior_metadata = prior.get("metadata")
+            if isinstance(prior_metadata, Mapping):
+                for key in ("source", "source_image_id"):
+                    before = prior_metadata.get(key)
+                    after = record.metadata.get(key)
+                    if before is not None and after is not None and str(before) != str(after):
+                        break
+                else:
+                    reusable[record.reference_id] = row_by_id[record.reference_id]
+            else:
+                reusable[record.reference_id] = row_by_id[record.reference_id]
+        identity = {
+            "root": str(self.reuse_from.resolve()),
+            "artifact_generation": metadata["artifact_generation"],
+            "artifact_sha256": metadata["artifact_sha256"],
+            "eligible_descriptor_count": len(reusable),
+        }
+        return descriptors, reusable, identity
 
     def _load_or_create_state(
         self,
@@ -274,7 +331,7 @@ class EmbeddingJob:
         _atomic_json(self._state_path, state)
         return state
 
-    def _embed_isolating_failures(
+    def _embed_new_isolating_failures(
         self,
         batch: Sequence[ReferenceImage],
     ) -> tuple[list[str], np.ndarray, list[EmbeddingFailure]]:
@@ -329,6 +386,38 @@ class EmbeddingJob:
             else np.empty((0, self.retriever.descriptor_dim), dtype=np.float32)
         )
         return ids, matrix, failures
+
+    def _embed_isolating_failures(
+        self,
+        batch: Sequence[ReferenceImage],
+        *,
+        reusable_descriptors: np.ndarray | None = None,
+        reusable_rows: Mapping[str, int] | None = None,
+    ) -> tuple[list[str], np.ndarray, list[EmbeddingFailure], int]:
+        reusable_rows = reusable_rows or {}
+        missing = [record for record in batch if record.reference_id not in reusable_rows]
+        new_ids, new_matrix, failures = self._embed_new_isolating_failures(missing)
+        new_by_id = {reference_id: new_matrix[row] for row, reference_id in enumerate(new_ids)}
+        ids: list[str] = []
+        rows: list[np.ndarray] = []
+        reused = 0
+        for record in batch:
+            reuse_row = reusable_rows.get(record.reference_id)
+            if reuse_row is not None:
+                if reusable_descriptors is None:
+                    raise EmbeddingJobError("reusable descriptor mapping has no descriptor matrix")
+                ids.append(record.reference_id)
+                rows.append(np.asarray(reusable_descriptors[reuse_row], dtype=np.float32))
+                reused += 1
+            elif record.reference_id in new_by_id:
+                ids.append(record.reference_id)
+                rows.append(new_by_id[record.reference_id])
+        matrix = (
+            np.stack(rows).astype(np.float32, copy=False)
+            if rows
+            else np.empty((0, self.retriever.descriptor_dim), dtype=np.float32)
+        )
+        return ids, matrix, failures, reused
 
     def _completed_artifacts_for_signature(self, signature: str) -> EmbeddingArtifacts | None:
         """Reuse a committed generation after its resumability chunks are pruned.
@@ -509,6 +598,9 @@ class EmbeddingJob:
                 "descriptor_count": len(ids),
                 "descriptor_dim": self.retriever.descriptor_dim,
                 "failure_count": len(failures),
+                "reused_descriptor_count": int(state.get("reused_descriptor_count", 0)),
+                "computed_descriptor_count": int(state.get("computed_descriptor_count", len(ids))),
+                "reuse_provenance": state.get("reuse_provenance"),
                 "normalized": True,
                 "dtype": "float32",
                 "retriever": self.retriever.metadata.to_dict(),
@@ -567,7 +659,8 @@ class EmbeddingJob:
             raise EmbeddingJobError("reference manifest contains duplicate stable IDs")
 
         self.retriever.load()  # exactly once; model implementations are idempotent
-        signature = _input_signature(records, self.retriever)
+        reusable_descriptors, reusable_rows, reuse_identity = self._load_reusable_descriptors(records)
+        signature = _input_signature(records, self.retriever, reuse_identity=reuse_identity)
         if resume:
             completed = self._completed_artifacts_for_signature(signature)
             if completed is not None:
@@ -579,11 +672,18 @@ class EmbeddingJob:
 
         for start in range(next_index, len(records), self.batch_size):
             batch = records[start : start + self.batch_size]
-            ids, descriptors, failures = self._embed_isolating_failures(batch)
+            ids, descriptors, failures, reused = self._embed_isolating_failures(
+                batch,
+                reusable_descriptors=reusable_descriptors,
+                reusable_rows=reusable_rows,
+            )
             chunk_name = self._save_chunk(len(state["chunks"]), ids, descriptors)
             state["chunks"].append(chunk_name)
             state["failures"].extend(asdict(failure) for failure in failures)
             state["successful_count"] = int(state.get("successful_count", 0)) + len(ids)
+            state["reused_descriptor_count"] = int(state.get("reused_descriptor_count", 0)) + reused
+            state["computed_descriptor_count"] = int(state.get("computed_descriptor_count", 0)) + len(ids) - reused
+            state["reuse_provenance"] = reuse_identity
             state["next_input_index"] = start + len(batch)
             _atomic_json(self._state_path, state)
             progress = EmbeddingProgress(
@@ -718,6 +818,11 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--model-cache", type=Path)
     parser.add_argument("--no-resume", action="store_true")
+    parser.add_argument(
+        "--reuse-from",
+        type=Path,
+        help="reuse same-model descriptors when stable ID, image path, and source identity match",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
@@ -732,6 +837,7 @@ def main() -> None:
         retriever,
         args.output_dir,
         batch_size=args.batch_size,
+        reuse_from=args.reuse_from,
     ).run(records, resume=not args.no_resume)
     print(json.dumps(asdict(artifacts), default=str, indent=2))
 

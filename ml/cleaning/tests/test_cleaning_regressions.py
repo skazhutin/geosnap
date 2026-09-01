@@ -17,6 +17,7 @@ from ml.cleaning.reporting import (
     rebase_cleaning_report_from_manifest,
     update_cleaning_report,
 )
+from ml.ingestion.common import write_json
 from ml.ingestion.schema import CANONICAL_COLUMNS, canonical_record, manifest_dataframe, read_manifest, write_manifest
 
 
@@ -126,6 +127,48 @@ class CleaningRegressionTests(unittest.TestCase):
             self.assertTrue(
                 {*CANONICAL_COLUMNS, "blur_score", "brightness", "exposure_score"}.issubset(empty_quality.columns)
             )
+
+    def test_c2_exact_aoi_allows_valid_moscow_points_outside_legacy_rectangle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inside_image = root / "inside.jpg"
+            outside_image = root / "outside.jpg"
+            _pattern_image(inside_image, 30)
+            _pattern_image(outside_image, 31)
+            input_path = root / "input.parquet"
+            output_path = root / "clean.parquet"
+            write_manifest(
+                manifest_dataframe(
+                    [
+                        _record("inside", inside_image, lat=55.50, lon=37.10),
+                        _record("outside", outside_image, lat=55.50, lon=37.25),
+                    ]
+                ),
+                input_path,
+            )
+            aoi = root / "aoi.geojson"
+            write_json(
+                aoi,
+                {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [[37.0, 55.4], [37.2, 55.4], [37.2, 55.6], [37.0, 55.6], [37.0, 55.4]]
+                    ],
+                },
+            )
+
+            summary = clean_run(
+                input_path,
+                output_path,
+                root / "clean.json",
+                1,
+                root / "pipeline.json",
+                aoi_geojson=aoi,
+            )
+
+            self.assertEqual(read_manifest(output_path)["source_image_id"].tolist(), ["inside"])
+            self.assertEqual(summary["coordinate_scope"], "exact_aoi_polygon")
+            self.assertEqual(len(summary["aoi_sha256"]), 64)
 
     def test_d_metadata_json_remains_deterministic_string(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

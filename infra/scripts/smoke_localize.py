@@ -56,6 +56,7 @@ def run(
     query_image: Path | None = None,
     expected_status: str | None = None,
 ) -> dict[str, Any]:
+    index_dir = index_dir.resolve()
     reference_id, indexed_image_path = _first_reference(index_dir)
     image_path = query_image or indexed_image_path
     if not image_path.is_file():
@@ -106,6 +107,7 @@ def run(
     if query_image is None and (not matches or matches[0].get("reference_id") != reference_id):
         raise RuntimeError("top-1 ID does not match the queried index row")
     return {
+        "readiness": readiness.json(),
         "status": payload["status"],
         "query_kind": "indexed_reference" if query_image is None else "external_image",
         "query_reference_id": reference_id if query_image is None else None,

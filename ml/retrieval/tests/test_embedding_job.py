@@ -173,6 +173,39 @@ def test_finalization_streams_chunks_without_full_matrix_concatenate(
     assert load_embedding_artifacts(artifacts.root)[0].shape[0] == 4
 
 
+def test_incremental_job_reuses_matching_committed_descriptors(tmp_path: Path) -> None:
+    paths = [tmp_path / f"{index}.jpg" for index in range(3)]
+    for index, path in enumerate(paths):
+        _image(path, (20 * index, 40, 80))
+    base_records = [
+        ReferenceImage(f"id-{index}", path, {"source": "fixture", "source_image_id": str(index)})
+        for index, path in enumerate(paths[:2])
+    ]
+    retriever = DeterministicFixtureRetriever(allow_test_only=True)
+    base = tmp_path / "base"
+    EmbeddingJob(retriever, base, batch_size=2).run(base_records)
+    base_matrix = load_embedding_artifacts(base)[0].copy()
+
+    target_records = [
+        ReferenceImage(f"id-{index}", path, {"source": "fixture", "source_image_id": str(index)})
+        for index, path in enumerate(paths)
+    ]
+    target = tmp_path / "target"
+    EmbeddingJob(
+        DeterministicFixtureRetriever(allow_test_only=True),
+        target,
+        batch_size=3,
+        reuse_from=base,
+    ).run(target_records)
+
+    matrix, ids, _, metadata = load_embedding_artifacts(target)
+    assert ids == ["id-0", "id-1", "id-2"]
+    np.testing.assert_array_equal(matrix[:2], base_matrix)
+    assert metadata["reused_descriptor_count"] == 2
+    assert metadata["computed_descriptor_count"] == 1
+    assert metadata["reuse_provenance"]["eligible_descriptor_count"] == 2
+
+
 def test_loader_rejects_tampered_descriptor_bytes(tmp_path: Path) -> None:
     image = tmp_path / "one.jpg"
     _image(image, (20, 40, 60))

@@ -14,6 +14,7 @@ ENV PATH="/app/.venv/bin:${PATH}"
 
 COPY apps/backend/app ./app
 COPY ml ./ml
+COPY configs/moscow_real_v2_frozen.json ./configs/moscow_real_v2_frozen.json
 
 EXPOSE 8000
 

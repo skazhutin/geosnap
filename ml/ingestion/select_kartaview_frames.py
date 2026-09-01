@@ -151,6 +151,40 @@ def _balanced_take(
     return selected
 
 
+def _load_target_plan(path: Path | None) -> tuple[set[tuple[int, int]], set[str], tuple[float, float, float, float] | None]:
+    if path is None:
+        return set(), set(), None
+    payload = read_json(path, default={})
+    if not isinstance(payload, dict):
+        raise ValueError("target acquisition plan must be a JSON object")
+    try:
+        bounds = tuple(float(value) for value in payload["grid"]["bounds_west_south_east_north"])
+        cells = {
+            (int(cell["x"]), int(cell["y"]))
+            for cell in payload["tranche"]["cells"]
+            if isinstance(cell, dict)
+        }
+        sequences = {
+            str(value)
+            for cell in payload["tranche"]["cells"]
+            if isinstance(cell, dict)
+            for value in cell.get("kartaview_sequence_ids", [])
+            if str(value).strip()
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("target acquisition plan has an invalid grid/tranche contract") from exc
+    if len(bounds) != 4 or not cells:
+        raise ValueError("target acquisition plan must contain bounds and at least one tranche cell")
+    return cells, sequences, bounds
+
+
+def _grid_cell(lat: float, lon: float, bounds: tuple[float, float, float, float]) -> tuple[int, int]:
+    west, south, east, north = bounds
+    x = min(19, max(0, int((lon - west) / (east - west) * 20)))
+    y = min(19, max(0, int((lat - south) / (north - south) * 20)))
+    return x, y
+
+
 def run(
     input_json: Path,
     output_json: Path,
@@ -161,6 +195,7 @@ def run(
     heading_diversity_deg: float = DEFAULT_HEADING_DIVERSITY_DEG,
     min_heading_spacing_m: float = DEFAULT_MIN_HEADING_SPACING_M,
     max_per_sequence: int | None = None,
+    target_plan: Path | None = None,
 ) -> dict[str, Any]:
     if max_records is not None and max_records < 1:
         raise ValueError("max_records must be >= 1 when configured")
@@ -176,11 +211,14 @@ def run(
     if not isinstance(payload, list):
         raise ValueError(f"{input_json} must contain a JSON array")
 
+    target_cells, target_sequences, target_bounds = _load_target_plan(target_plan)
     min_lat, max_lat, min_lon, max_lon = MOSCOW_BOUNDS
     valid: list[dict[str, Any]] = []
     invalid_rows = 0
     outside_moscow = 0
     duplicate_source_ids = 0
+    outside_target_cells = 0
+    outside_target_sequences = 0
     seen_source_ids: set[str] = set()
     for value in payload:
         if not isinstance(value, dict):
@@ -202,13 +240,28 @@ def run(
             duplicate_source_ids += 1
             continue
         seen_source_ids.add(source_id)
-        valid.append(_prefer_cdn_url(dict(value)))
+        row = _prefer_cdn_url(dict(value))
+        if target_bounds is not None:
+            target_cell = _grid_cell(lat, lon, target_bounds)
+            if target_cell not in target_cells:
+                outside_target_cells += 1
+                continue
+            if target_sequences and str(row["sequence_id"]) not in target_sequences:
+                outside_target_sequences += 1
+                continue
+            row["_geosnap_target_cell"] = list(target_cell)
+        valid.append(row)
     if not valid:
         raise ValueError("no valid Moscow KartaView frames are available for sampling")
 
     grouped: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     for row in valid:
-        grouped[_area_id(row)][str(row["sequence_id"])].append(row)
+        area = (
+            f"target_cell:{row['_geosnap_target_cell'][0]}:{row['_geosnap_target_cell'][1]}"
+            if "_geosnap_target_cell" in row
+            else _area_id(row)
+        )
+        grouped[area][str(row["sequence_id"])].append(row)
     sampled: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(dict)
     sampled_before_optional_sequence_limit = 0
     for area, sequences in grouped.items():
@@ -245,6 +298,10 @@ def run(
         "invalid_rows": invalid_rows,
         "outside_moscow_rows": outside_moscow,
         "duplicate_source_ids_removed": duplicate_source_ids,
+        "target_plan": str(target_plan) if target_plan is not None else None,
+        "target_plan_sha256": hashlib.sha256(target_plan.read_bytes()).hexdigest() if target_plan is not None else None,
+        "outside_target_cells": outside_target_cells,
+        "outside_target_sequences": outside_target_sequences,
         "candidate_areas": len(grouped),
         "candidate_sequences": sum(len(value) for value in grouped.values()),
         "after_sequence_neighbor_thinning": sampled_before_optional_sequence_limit,
@@ -304,6 +361,7 @@ def main() -> None:
         type=int,
         help="optional explicit per-sequence limit; omitted by default",
     )
+    parser.add_argument("--target-plan", type=Path, help="optional v2 acquisition plan; restricts cells/sequences")
     args = parser.parse_args()
     run(
         args.input_json,
@@ -314,6 +372,7 @@ def main() -> None:
         heading_diversity_deg=args.heading_diversity_deg,
         min_heading_spacing_m=args.min_heading_spacing_m,
         max_per_sequence=args.max_per_sequence,
+        target_plan=args.target_plan,
     )
 
 

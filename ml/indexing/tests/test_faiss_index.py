@@ -47,6 +47,20 @@ def test_exact_cosine_search_and_compatibility_import() -> None:
     assert index.build_metadata["normalization"] == "L2"
 
 
+def test_full_gallery_rank_diagnostics_do_not_depend_on_returned_top_k() -> None:
+    diagnostics = _build().diagnose_one(
+        np.asarray([0.9, 0.1, 0.0], dtype=np.float32),
+        true_lat=55.76,
+        true_lon=37.62,
+    )
+
+    within_100 = diagnostics["by_positive_distance_m"]["100"]
+    assert diagnostics["rank_scope"] == "complete_exact_gallery"
+    assert within_100["positive_rank"] == 2
+    assert within_100["positive_reference"]["reference_id"] == "green"
+    assert within_100["positive_minus_best_incorrect_margin"] < 0
+
+
 def test_save_reload_produces_equivalent_neighbors_and_scores(tmp_path: Path) -> None:
     index = _build()
     queries = np.asarray([[1.0, 0.2, 0.0], [0.0, 0.1, 1.0]], dtype=np.float32)

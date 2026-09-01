@@ -166,3 +166,46 @@ def test_exact_source_id_duplicates_are_removed_before_balancing() -> None:
 
         assert len(read_json(output, default=[])) == 1
         assert summary["duplicate_source_ids_removed"] == 1
+
+
+def test_target_plan_reuses_expanded_sequences_only_in_planned_cells() -> None:
+    kept = _row("center", "kept-sequence", 0, 55.70)
+    rejected_sequence = _row("center", "other-sequence", 0, 55.70)
+    rejected_cell = _row("center", "kept-sequence", 1, 55.80)
+    bounds = [37.3, 55.55, 37.9, 55.95]
+
+    def cell(row: dict) -> tuple[int, int]:
+        x = int((float(row["lon"]) - bounds[0]) / (bounds[2] - bounds[0]) * 20)
+        y = int((float(row["lat"]) - bounds[1]) / (bounds[3] - bounds[1]) * 20)
+        return x, y
+
+    x, y = cell(kept)
+    plan = {
+        "grid": {"bounds_west_south_east_north": bounds},
+        "tranche": {
+            "cells": [
+                {
+                    "x": x,
+                    "y": y,
+                    "kartaview_sequence_ids": ["kept-sequence"],
+                }
+            ]
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source, output, report, target = (
+            root / "source.json",
+            root / "selected.json",
+            root / "report.json",
+            root / "plan.json",
+        )
+        write_json(source, [kept, rejected_sequence, rejected_cell])
+        write_json(target, plan)
+
+        summary = run(source, output, report, target_plan=target)
+
+        assert [row["source_image_id"] for row in read_json(output, default=[])] == ["kept-sequence-0"]
+        assert summary["target_plan_sha256"]
+        assert summary["outside_target_cells"] == 1
+        assert summary["outside_target_sequences"] == 1

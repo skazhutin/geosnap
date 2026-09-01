@@ -15,9 +15,11 @@ replace them.
 
 The deployable Moscow reference gallery is restricted to physically preserved
 **Mapillary** and **KartaView** imagery inside the pinned OSM administrative
-boundary. Its current final manifest has 22,830 references (16,504 Mapillary;
-6,326 KartaView). This is an engineering publication boundary, not a statement
-that either source grants full-city coverage or a blanket redistribution right.
+boundary. The v2 approved-source corpus has 23,654 rows (17,143 Mapillary;
+6,511 KartaView), while the leakage-resistant production gallery/index contains
+19,524 references (16,605 Mapillary; 2,919 KartaView). This is an engineering
+publication boundary, not a statement that either source grants full-city
+coverage or a blanket redistribution right.
 
 | Source | Current terms used by this project | Required handling |
 | --- | --- | --- |

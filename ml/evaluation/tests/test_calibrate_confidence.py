@@ -128,6 +128,43 @@ def test_higher_threshold_breaks_a_fully_equal_safety_and_accuracy_tie() -> None
     assert calibrated["chosen"]["unconditional_accuracy_within_m"]["100"] == 1.0
 
 
+def test_wilson_objective_maximizes_answer_rate_subject_to_precision_floor() -> None:
+    rows = [
+        _row(f"high-{index}", confidence=0.9, error_m=20.0)
+        for index in range(50)
+    ]
+    rows.extend(
+        _row(f"bad-{index}", confidence=0.8, error_m=150.0)
+        for index in range(10)
+    )
+    rows.extend(
+        _row(f"low-{index}", confidence=0.5, error_m=30.0)
+        for index in range(40)
+    )
+
+    calibrated = calibrate_confidence_payload(
+        _benchmark(rows),
+        minimum_conditional_accuracy_100m_wilson_lower_95=0.9,
+    )
+
+    assert calibrated["policy"]["objective"]["feasible"] is True
+    assert calibrated["chosen_threshold"] == 0.9
+    assert calibrated["chosen"]["answer_rate"] == 0.5
+    assert calibrated["chosen"]["conditional_accuracy_within_100m_wilson_lower_95"] >= 0.9
+
+
+def test_wilson_objective_reports_when_no_operating_point_is_feasible() -> None:
+    calibrated = calibrate_confidence_payload(
+        _benchmark([_row("only", confidence=0.9, error_m=10.0)]),
+        minimum_conditional_accuracy_100m_wilson_lower_95=0.9,
+    )
+
+    assert calibrated["policy"]["objective"]["feasible"] is False
+    assert calibrated["chosen_threshold"] is None
+    assert calibrated["chosen"] is None
+    assert calibrated["zero_false_confident_achieved"] is None
+
+
 def test_nonzero_base_threshold_fails_closed_unless_explicitly_allowed() -> None:
     report = _benchmark(
         [

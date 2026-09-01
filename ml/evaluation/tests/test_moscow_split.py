@@ -186,6 +186,35 @@ def test_builds_deterministic_sequence_held_out_split_and_complete_audit(tmp_pat
     assert (first_dir / "bundle_manifest.json").is_file()
 
 
+def test_representative_balance_is_opt_in_deterministic_and_audited(tmp_path: Path) -> None:
+    manifest = _diverse_fixture(tmp_path)
+    first = run(
+        manifest,
+        tmp_path / "representative-a",
+        seed=91,
+        max_queries=4,
+        representative_balance=True,
+    )
+    second = run(
+        manifest,
+        tmp_path / "representative-b",
+        seed=91,
+        max_queries=4,
+        representative_balance=True,
+    )
+
+    assert first["bundle"]["fingerprint"] == second["bundle"]["fingerprint"]
+    assert first["parameters"]["representative_balance"] is True
+    geographic = first["geographic_partition"]
+    assert geographic["representative_balance"] is True
+    assert set(geographic["feature_counts"]) == {"calibration", "test"}
+    assert any(
+        key.startswith("provider:")
+        for counts in geographic["feature_counts"].values()
+        for key in counts
+    )
+
+
 def test_exact_and_perceptual_gallery_leaks_are_rejected(tmp_path: Path) -> None:
     exact_path = tmp_path / "images" / "exact.jpg"
     _image(exact_path, 100)

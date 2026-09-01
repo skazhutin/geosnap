@@ -19,6 +19,7 @@ from ml.evaluation.moscow_benchmark import (
 from ml.indexing.faiss_index import RetrievalResult
 from ml.ingestion.schema import canonical_record, manifest_dataframe
 from ml.retrieval.base import BaseRetriever, ImageInput, RetrieverMetadata, l2_normalize
+from ml.retrieval.embedding_job import EmbeddingJob, ReferenceImage
 
 
 class _MockRetriever(BaseRetriever):
@@ -364,6 +365,32 @@ def test_streamed_gallery_build_keeps_batches_bounded_and_preserves_metrics(tmp_
     ]
     assert streamed_payload["runtime"]["gallery_descriptor_storage_bytes"] == 10 * 3 * 4
     assert streamed_payload["runtime"]["exact_faiss_vector_storage_bytes"] == 10 * 3 * 4
+
+
+def test_benchmark_reuses_validated_exact_order_gallery_embeddings(tmp_path: Path) -> None:
+    gallery_path, query_path = _write_fixture(tmp_path)
+    gallery_rows = pd.read_parquet(gallery_path).to_dict(orient="records")
+    embedding_dir = tmp_path / "embeddings"
+    EmbeddingJob(_MockRetriever(), embedding_dir, batch_size=4).run(
+        [ReferenceImage.from_mapping(row) for row in gallery_rows]
+    )
+    retriever = _TrackingMockRetriever(batch_size=3)
+
+    payload, _, _ = run_moscow_benchmark(
+        gallery_manifest_path=gallery_path,
+        query_manifest_path=query_path,
+        retriever=retriever,
+        output_dir=tmp_path / "precomputed-reports",
+        top_k=10,
+        confidence_threshold=0.0,
+        search_factory=_StreamingNumpyExactSearch,
+        gallery_embedding_dir=embedding_dir,
+    )
+
+    assert retriever.embed_batch_sizes == [1, 1, 1, 1]
+    assert payload["runtime"]["gallery_embedding_ms"] == 0.0
+    assert payload["runtime"]["gallery_embedding_source"] == "validated_precomputed_artifact"
+    assert payload["primary"]["retrieval"]["recall_at"]["10"] == 1.0
 
 
 def test_robustness_derivatives_are_separate_from_primary_denominator(tmp_path: Path) -> None:

@@ -1,104 +1,132 @@
-# Real Moscow model selection and frozen test
+# Real Moscow evaluation — current v2 candidate
 
-Актуально на 2026-08-31. Это единственный tracked summary, который описывает
-выбор deployable retriever. Он использует только исходные Mapillary/KartaView
-street-view изображения из exact-AOI Moscow gallery; Commons и MSLS не
-участвовали в model selection, confidence calibration, production embedding
-или FAISS index.
+Актуально на 2026-09-01. Полная evidence chain, acquisition и per-stratum
+объяснение находятся в [phase2_quality_improvement.md](phase2_quality_improvement.md).
+Этот документ — компактный current-candidate summary. `moscow_real_v1`
+сохраняется ниже как исторический результат и не использовался для v2 tuning.
 
-> Результат честно ограничен частичным покрытием: это не city-wide accuracy
-> claim и не основание включать локализацию для любого снимка Москвы.
+> V2 не подтверждает полезную city-wide локализацию. Frozen runtime намеренно
+> fail-closed: prospective Wilson objective на calibration оказался infeasible.
 
-## Protocol and leakage boundary
+## V2 protocol and leakage boundary
 
-- Final clean source gallery: 22 830 Mapillary/KartaView references.
-- Leakage-resistant bundle: 18 821 gallery rows, 493 calibration queries and
-  507 frozen held-out test queries.
-- Gallery and query provider sequences are disjoint. The audit also found zero
-  cross-split overlap in record ID, source image ID, source URL, resolved path,
-  declared/computed SHA-256 and pHash-near duplicates (Hamming threshold 4).
-- Every query has a gallery positive within 100 m. Query spacing is at least
-  20 m; calibration/test use a 100 m geographic embargo.
-- Both models used pinned official checkpoints, MPS, batch size 8, top-K 10,
-  weighted geographic medoid and isolated normalized exact
-  `faiss.IndexFlatIP`. All accuracy figures use **all queries** as the
-  denominator, so abstentions count as failures.
-- Candidate model selection used calibration only at threshold `0.0`. The
-  test split was opened once after model, estimator and threshold were frozen.
+- Deployable source manifest: 23 654 Mapillary/KartaView rows.
+- Bundle: 19 524 gallery, 503 calibration, 497 final test rows.
+- Provider sequence, record/source ID, URL/path, file hash, geographic group и
+  pHash-near overlap между split равны нулю.
+- Query spacing >=20,51 м; calibration/test distance >=252,04 м; у каждого
+  query есть gallery positive <=100 м.
+- Bundle fingerprint:
+  `78cccca3f410f318673d99f1b3dcb303b4de678c4799821e0ff575a379248862`.
+- Candidate set, >=5 pp material gate, paired bootstrap, stratum guard, K rule,
+  Wilson objective и one-test limit были записаны до test.
 
-The generated local JSON/Markdown evidence is intentionally ignored because it
-contains generated paths and per-query records:
-`data/evaluation/moscow_real_v1/reports/`.
+Generated JSON/Markdown reports и per-query rows хранятся в ignored
+`data/evaluation/moscow_real_v2/reports/`.
 
-## Calibration: raw retrieval and localization
+## Calibration retrieval selection
 
-| Model | R@1 / R@5 / R@10 | <=25 / <=50 / <=100 m | Answer rate | Median / P90 answered error | Query / end-to-end median |
+Все кандидаты использовали одинаковые gallery/query, exact normalized
+`IndexFlatIP`, K=50 и weighted medoid. Таблица показывает <=100 м retrieval:
+
+| Candidate | R@1 | R@5 | R@10 | R@20 | R@50 | Median / p75 / p90 positive rank | End-to-end p50 / p95 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MegaLoc single baseline | 23,06% | 27,63% | 31,01% | 32,21% | 37,57% | 288 / 3 674,5 / 10 546,2 | 129,57 / 186,80 мс |
+| MegaLoc five-crop | 22,66% | 29,03% | 31,01% | 33,60% | 38,37% | 372 / 3 170,5 / 10 715,2 | 314,25 / 412,27 мс |
+| DINOv2 + SALAD | 23,26% | 30,82% | 33,40% | 37,57% | 42,74% | 124 / 1 244 / 5 283,8 | 125,62 / 173,06 мс |
+
+SALAD дал +5,37 pp R@20 с paired-bootstrap 95% CI [+2,19, +8,55] pp,
+но worst major-region regression равен -10 pp, поэтому stratum gate не пройден.
+Кроме того, SALAD checkpoint остаётся evaluation-only до GPL compatibility/
+checkpoint-license review. Five-crop дал только +1,39 pp R@20, CI
+[-0,60, +3,38] pp, worst region -10 pp и 2,43× median latency.
+
+**Deployable selection:** unchanged `megaloc`, single query aggregation,
+`weighted_medoid`, verification disabled. Material gate не пройден; report не
+называет deployable retrieval materially better.
+
+## Production retrieval depth
+
+| K | Recall at depth | R@50 retained | All-query <=100 м at threshold 0 | Answer rate | >100 м errors |
 |---|---:|---:|---:|---:|---:|
-| MegaLoc | 23.53 / 32.66 / 35.29% | 9.53 / 11.36 / 12.17% | 14.00% | 13.34 / 152.67 m | 83.53 / 126.47 ms |
-| DINOv2 + SALAD | 29.61 / 36.31 / 39.55% | 10.95 / 15.21 / 17.04% | 23.12% | 26.44 / 2,296.98 m | 78.33 / 120.89 ms |
+| 10 | 31,01% | 82,54% | 9,74% | 10,74% | 5 |
+| 20 | 32,21% | 85,71% | 6,36% | 6,56% | 1 |
+| 50 | 37,57% | 100,00% | 3,18% | 3,18% | 0 |
 
-SALAD has higher unthresholded recall and all-query localization on this
-calibration pass, but its accepted-error tail is much worse and it produces 30
-unthresholded false-confident answers beyond 100 m versus MegaLoc's 9. Raw
-metrics were not used alone to select a deployment operating point.
+Predeclared rule требует >=90% R@50, поэтому frozen production depth — K=50.
+Benchmark, confidence calibration, service и smoke читают один tracked runtime
+artifact и отвергают конфликтующие overrides.
 
-## Safety-first confidence calibration and decision
+## Prospective confidence and frozen configuration
 
-The fixed policy first minimizes `status=ok && error > 100 m`, then maximizes
-unconditional <=100 m accuracy, then answer rate, and finally prefers the
-higher threshold. It never repurposes the held-out test for tuning.
+Цель: максимизировать answer rate при 95% Wilson lower bound conditional
+<=100 м precision >=90%. Только 16/503 calibration rows прошли non-threshold
+safety gates. Все 16 правильные, point precision 100%, но interval
+[80,64%, 100%]; qualified threshold отсутствует.
 
-| Candidate | Threshold | False-confident >100 m | Answered / total | All-query <=25 / <=50 / <=100 m |
-|---|---:|---:|---:|---:|
-| MegaLoc | `0.5548002022369389` | 0 | 50 / 493 | 8.52 / 9.74 / 10.14% |
-| DINOv2 + SALAD | `0.7803838356776883` | 0 | 44 / 493 | 6.69 / 8.32 / 8.92% |
+Применён predeclared fail-closed threshold `1.0`, не наблюдавшийся на
+calibration. Frozen artifact:
 
-**Frozen deployment selection:** `RETRIEVER=megaloc`,
-`COORDINATE_ESTIMATOR=weighted_medoid`,
-`CONFIDENCE_THRESHOLD=0.5548002022369389`. It has the stronger useful
-post-safety calibration result and the much better raw accepted-error tail;
-this is not a claim that MegaLoc wins every unthresholded retrieval metric.
+- `configs/moscow_real_v2_frozen.json`;
+- SHA-256 `7f915c3806bcc214c928ce4bb3fb6af9467725faa420835d8acf05f5d0be0448`;
+- MegaLoc revision `5fe0dd697c4a70ba3e23607f6716ab3c606b16db`;
+- checkpoint SHA-256
+  `d4f9f2bcb60018f91eb6a8e061ed054fd55654e10c2569cf13841ea986ffb4f8`;
+- exact `IndexFlatIP`, 19 524×8 448 float32 vectors, K=50, single query,
+  no reranker, weighted medoid, verification off, threshold 1.0.
 
-## Single frozen held-out test
+## Single frozen v2 test
 
-The test used the selection above, unchanged after calibration, on 507 new
-queries:
+Test был запущен один раз после freeze; post-test tuning и rerun не было.
 
-| Metric | Result |
+| Positive radius | R@1 | R@5 | R@10 | R@20 | R@50 | Median / p75 / p90 rank |
+|---|---:|---:|---:|---:|---:|---:|
+| <=25 м | 6,44% | 8,85% | 9,66% | 10,66% | 12,07% | 661 / 4 200,5 / 11 084,3 |
+| <=50 м | 11,67% | 17,30% | 18,71% | 20,52% | 24,55% | 486,5 / 3 896 / 11 736,8 |
+| <=100 м | 14,89% | 21,53% | 23,14% | 26,36% | 33,00% | 417 / 3 072 / 8 634,4 |
+
+| Product metric | Result |
 |---|---:|
-| Recall@1 / @5 / @10 | 17.36 / 23.87 / 26.63% |
-| All-query localization <=25 / <=50 / <=100 m | 1.78 / 1.97 / 2.17% |
-| Answer rate | 2.17% (11 / 507) |
-| Conditional <=25 / <=50 / <=100 m among answers | 81.82 / 90.91 / 100.00% |
-| Median / P90 error among answers | 13.45 / 33.85 m |
-| `low_confidence` / `out_of_coverage` | 41.42 / 56.41% |
-| False-confident answers >100 m | 0 |
-| Query / end-to-end median | 76.71 / 113.36 ms |
+| Answer rate | 0 / 497 (0%) |
+| All-query <=25 / <=50 / <=100 м | 0 / 0 / 0% |
+| Conditional <=100 м precision | undefined (no answers) |
+| Wilson 95% interval | undefined (no answers) |
+| False-confident >100 м | 0 |
+| Accepted median / p90 / p95 | undefined |
+| `low_confidence` / `out_of_coverage` | 53,72 / 46,28% |
+| End-to-end p50 / p90 / p95 | 134,39 / 182,90 / 191,88 мс |
+| Peak benchmark RSS | 2 170 896 384 bytes |
 
-The safety criterion holds on this frozen split, but the 2.17% answer rate is
-the material product limitation. GeoSnap is therefore a partial-coverage,
-abstention-first prototype rather than a launch-ready city-wide geolocator.
+Это честный fail-closed результат, а не достижение 90% precision.
 
-## Production artifact bound to the result
+## V2 production artifact and host smoke
 
-The deployed index is built from the **gallery split only**:
+- index: `data/indexes/moscow_real_v2/megaloc/`, 19 524 rows;
+- `index.faiss`: 659 755 053 bytes, SHA-256
+  `2c08bc294556c29ea1eeec96d4b80abefe4b3669382c16c5fae8548274f563e5`;
+- full index directory with sidecars: 702 MiB;
+- `/ready`: HTTP 200 with model/index/metadata ready;
+- real indexed-reference `POST /localize`: correct reference top-1,
+  expected `low_confidence`, 204,48 мс total;
+- host smoke maximum RSS: 2 318 712 832 bytes.
 
-- `data/embeddings/moscow/megaloc/`: 18 821 descriptors, dimension 8 448;
-- `data/indexes/moscow/megaloc/`: 18 821-vector exact `IndexFlatIP` index;
-- `index.faiss` SHA-256:
-  `102eb5d74730aab96ccaf6b61d4dd1ed7560de43ef0ef1e60f8aada23d3d9344`;
-- vector storage: 635,999,232 bytes; embedding job completed with no residual
-  checkpoint directory.
+Docker-path smoke также прошёл на существующем `geosnap-backend:latest` с
+текущими code/config/index, подключёнными read-only: `/ready` и настоящий
+multipart `/localize` вернули HTTP 200, indexed reference остался top-1,
+статус `low_confidence`, 50 matches; CPU diagnostics
+1099,52/122,60/1418,45 мс embedding/retrieval/total. Snapshot памяти после
+запроса — 3,487 GiB. Это не заменяет чистый rebuild 17,5 GB image, оставленный
+для Part 3.
 
-`uncertainty_radius_m` remains `null`: selecting a confidence threshold does
-not calibrate a geographic uncertainty radius. The service exposes the warning
-`uncertainty_not_calibrated` rather than inventing one.
+`uncertainty_radius_m` остаётся `null`; он не был калиброван.
 
-## What is not evidence for this selection
+## Historical immutable v1
 
-The historical Commons landmark proxy and its older verification experiment
-remain research-only records. They neither select this model nor establish
-Moscow coverage. The current 100-query real-data geometric-verification
-ablation found zero all-query accuracy gain and +1,002.40 ms median overhead,
-so `VERIFICATION_ENABLED=false` remains the recorded default; details and its
-all-abstention limitation are in [verification_report.md](verification_report.md).
+V1 использовал 18 821 gallery rows, 493 calibration и 507 opened test queries.
+Calibration <=100 м R@1/5/10/20/50 была
+23,53/32,66/35,29/38,54/43,00%, median positive rank 155. Frozen test с
+threshold `0.5548002022369389` ответил 11/507 (2,17%), conditional <=100 м
+100%, false-confident >100 м 0, median/p90 accepted error 13,45/33,85 м.
+
+V1 и v2 splits различаются; эти числа нельзя трактовать как paired regression
+или improvement. V1 artifacts/reports не перезаписывались.

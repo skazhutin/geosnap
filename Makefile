@@ -14,6 +14,7 @@ EMBEDDING_BATCH_SIZE ?= 8
 RETRIEVAL_TOP_K ?= 20
 GEOSNAP_MODEL_CACHE ?= .cache/torch/hub
 HF_HOME ?= .cache/huggingface
+GEOSNAP_RUNTIME_CONFIG ?=
 
 DATA_ROOT ?= data
 RAW_DIR := $(DATA_ROOT)/raw/$(PROFILE)
@@ -81,6 +82,20 @@ MOSCOW_VERIFICATION_GEOMETRIC_WEIGHT ?= 0.35
 MOSCOW_VERIFICATION_MIN_SEQUENCES ?= 10
 MOSCOW_VERIFICATION_MIN_AREAS ?= 4
 MOSCOW_VERIFICATION_REPORT_STEM ?= $(subst -,_,$(MOSCOW_EVAL_MODEL))_$(MOSCOW_VERIFICATION_BACKEND)_k$(MOSCOW_VERIFY_TOP_K)_w$(subst .,_,$(MOSCOW_VERIFICATION_GEOMETRIC_WEIGHT))_moscow_verification_ablation
+MOSCOW_V2_DIR ?= $(DATA_ROOT)/evaluation/moscow_real_v2
+MOSCOW_V2_GENERATED_DIR ?= $(DATA_ROOT)/evaluation/generated/moscow_real_v2
+MOSCOW_V2_ACQUISITION_DIR ?= $(MOSCOW_V2_GENERATED_DIR)/acquisition
+MOSCOW_V2_SOURCE_MANIFEST ?= $(MOSCOW_V2_GENERATED_DIR)/source_manifest_clean.parquet
+MOSCOW_V2_GALLERY ?= $(MOSCOW_V2_DIR)/gallery.parquet
+MOSCOW_V2_CALIBRATION ?= $(MOSCOW_V2_DIR)/calibration_queries.parquet
+MOSCOW_V2_TEST ?= $(MOSCOW_V2_DIR)/test_queries.parquet
+MOSCOW_V2_MODEL ?= megaloc
+MOSCOW_V2_TOP_K ?= 50
+MOSCOW_V2_QUERY_AGGREGATION ?= single
+MOSCOW_V2_EMBEDDINGS ?= $(DATA_ROOT)/embeddings/moscow_real_v2/$(MOSCOW_V2_MODEL)
+MOSCOW_V2_REPORT_STEM ?= baseline_megaloc_weighted_medoid_calibration
+MOSCOW_V2_REUSE_FROM ?=
+MOSCOW_V2_REUSE_ARGS = $(if $(strip $(MOSCOW_V2_REUSE_FROM)),--reuse-from "$(MOSCOW_V2_REUSE_FROM)")
 
 MAPILLARY_JSON := $(RAW_DIR)/mapillary_raw.json
 MAPILLARY_CITYWIDE_JSON := $(RAW_DIR)/mapillary_citywide_raw.json
@@ -106,7 +121,9 @@ FINAL_MANIFEST := $(PROCESSED_DIR)/manifest_clean.parquet
 	merge download prepare-data split-moscow benchmark-moscow benchmark-moscow-models \
 	calibrate-moscow-confidence benchmark-moscow-verification benchmark-moscow-test \
 	embed embed-moscow-gallery build-index index-moscow-gallery \
-	eval-data eval api frontend smoke compose-config
+	eval-data eval api frontend smoke smoke-moscow-v2 compose-config \
+	plan-moscow-v2-acquisition expand-mapillary-v2 select-kartaview-v2 split-moscow-v2 \
+	coverage-moscow-v2 embed-moscow-v2 benchmark-moscow-v2-calibration calibrate-moscow-v2-confidence
 
 setup:
 	$(UV) sync --extra dev
@@ -404,8 +421,7 @@ eval: eval-data
 		--estimator "$(EVAL_ESTIMATOR)" --report-stem "$(EVAL_STEM)" --robustness
 
 api:
-	GEOSNAP_INDEX_DIR="$(INDEX_DIR)" RETRIEVER="$(RETRIEVER)" \
-		CITY_ID="$(CITY_ID)" INDEX_ID="$(PROFILE)" \
+	$(if $(strip $(GEOSNAP_RUNTIME_CONFIG)),GEOSNAP_RUNTIME_CONFIG="$(GEOSNAP_RUNTIME_CONFIG)",GEOSNAP_INDEX_DIR="$(INDEX_DIR)" RETRIEVER="$(RETRIEVER)" CITY_ID="$(CITY_ID)" INDEX_ID="$(PROFILE)") \
 		$(PYTHON) -m uvicorn app.main:app --app-dir apps/backend --host 0.0.0.0 --port 8000
 
 frontend:
@@ -415,5 +431,77 @@ smoke:
 	PYTHONPATH=.:apps/backend GEOSNAP_MODEL_CACHE="$(GEOSNAP_MODEL_CACHE)" \
 		$(PYTHON) infra/scripts/smoke_localize.py --index-dir "$(INDEX_DIR)" $(SMOKE_EXTRA_ARGS)
 
+smoke-moscow-v2:
+	GEOSNAP_RUNTIME_CONFIG="configs/moscow_real_v2_frozen.json" RETRIEVAL_TOP_K=50 \
+		$(MAKE) smoke INDEX_DIR="data/indexes/moscow_real_v2/megaloc"
+
 compose-config:
 	docker compose --env-file /dev/null config --quiet
+
+plan-moscow-v2-acquisition:
+	$(PYTHON) -m ml.ingestion.moscow_acquisition_plan \
+		--gallery-manifest "$(DATA_ROOT)/evaluation/moscow_real_v1/gallery.parquet" \
+		--mapillary-json "$(DATA_ROOT)/raw/moscow/mapillary_citywide_raw.json" \
+		--mapillary-json "$(DATA_ROOT)/raw/moscow/mapillary_admin_outer_raw_v2.json" \
+		--kartaview-json "$(DATA_ROOT)/raw/moscow/kartaview_sequences_raw.json" \
+		--aoi-geojson "$(MOSCOW_AOI_GEOJSON)" \
+		--historical-calibration-manifest "$(DATA_ROOT)/evaluation/moscow_real_v1/calibration_queries.parquet" \
+		--historical-per-query-jsonl "$(DATA_ROOT)/evaluation/generated/product_quality_diagnosis/per_query.jsonl" \
+		--output-json "$(MOSCOW_V2_ACQUISITION_DIR)/acquisition_plan.json"
+
+expand-mapillary-v2:
+	$(PYTHON) -m ml.ingestion.mapillary_reference_expansion \
+		--discovery-json "$(DATA_ROOT)/raw/moscow/mapillary_citywide_raw.json" \
+		--discovery-json "$(DATA_ROOT)/raw/moscow/mapillary_admin_outer_raw_v2.json" \
+		--output-json "$(MOSCOW_V2_ACQUISITION_DIR)/mapillary_expanded.json" \
+		--checkpoint "$(MOSCOW_V2_ACQUISITION_DIR)/mapillary_expansion.checkpoint.json" \
+		--cache-dir "$(MOSCOW_V2_ACQUISITION_DIR)/mapillary_cache" \
+		--stats "$(MOSCOW_V2_ACQUISITION_DIR)/mapillary_expansion.stats.json" \
+		--aoi-geojson "$(MOSCOW_AOI_GEOJSON)" \
+		--acquisition-plan "$(MOSCOW_V2_ACQUISITION_DIR)/acquisition_plan.json"
+
+select-kartaview-v2:
+	$(PYTHON) -m ml.ingestion.select_kartaview_frames \
+		--input-json "$(DATA_ROOT)/raw/moscow/kartaview_sequences_raw.json" \
+		--output-json "$(MOSCOW_V2_ACQUISITION_DIR)/kartaview_targeted.json" \
+		--report "$(MOSCOW_V2_ACQUISITION_DIR)/kartaview_targeted.report.json" \
+		--target-plan "$(MOSCOW_V2_ACQUISITION_DIR)/acquisition_plan.json" \
+		--max-records 400 --max-per-sequence 5
+
+split-moscow-v2:
+	$(PYTHON) -m ml.evaluation.moscow_split \
+		--manifest "$(MOSCOW_V2_SOURCE_MANIFEST)" --output-dir "$(MOSCOW_V2_DIR)" \
+		--seed 20260901 --max-queries 1000 --min-query-spacing-m 20 \
+		--positive-distance-m 100 --phash-distance-threshold 4 \
+		--holdout-candidate-multiplier 4 --representative-balance
+
+coverage-moscow-v2:
+	$(PYTHON) -m ml.evaluation.v2_coverage \
+		--gallery "$(MOSCOW_V2_GALLERY)" --calibration "$(MOSCOW_V2_CALIBRATION)" \
+		--test "$(MOSCOW_V2_TEST)" --source-manifest "$(MOSCOW_V2_SOURCE_MANIFEST)" \
+		--output-json "$(MOSCOW_V2_DIR)/coverage/coverage_grid.json" \
+		--output-png "$(MOSCOW_V2_DIR)/coverage/coverage_diversity_grid.png"
+
+embed-moscow-v2:
+	$(PYTHON) -m ml.retrieval.embedding_job --manifest "$(MOSCOW_V2_GALLERY)" \
+		--output-dir "$(MOSCOW_V2_EMBEDDINGS)" --retriever "$(MOSCOW_V2_MODEL)" \
+		--device "$(TORCH_DEVICE)" --batch-size "$(EMBEDDING_BATCH_SIZE)" \
+		--model-cache "$(GEOSNAP_MODEL_CACHE)" $(MOSCOW_V2_REUSE_ARGS)
+
+benchmark-moscow-v2-calibration:
+	HF_HOME="$(HF_HOME)" $(PYTHON) -m ml.evaluation.moscow_benchmark \
+		--gallery-manifest "$(MOSCOW_V2_GALLERY)" --query-manifest "$(MOSCOW_V2_CALIBRATION)" \
+		--output-dir "$(MOSCOW_V2_DIR)/reports" --model "$(MOSCOW_V2_MODEL)" \
+		--device "$(TORCH_DEVICE)" --cache-dir "$(GEOSNAP_MODEL_CACHE)" \
+		--batch-size "$(EMBEDDING_BATCH_SIZE)" --top-k "$(MOSCOW_V2_TOP_K)" \
+		--estimator weighted_medoid --confidence-threshold 0 \
+		--query-aggregation "$(MOSCOW_V2_QUERY_AGGREGATION)" \
+		--gallery-embedding-dir "$(MOSCOW_V2_EMBEDDINGS)" \
+		--report-stem "$(MOSCOW_V2_REPORT_STEM)"
+
+calibrate-moscow-v2-confidence:
+	$(PYTHON) -m ml.evaluation.calibrate_confidence \
+		--benchmark-json "$(MOSCOW_V2_DIR)/reports/$(MOSCOW_V2_REPORT_STEM).json" \
+		--output-dir "$(MOSCOW_V2_DIR)/reports" \
+		--report-stem "$(MOSCOW_V2_REPORT_STEM)_confidence" \
+		--minimum-conditional-accuracy-100m-wilson-lower-95 0.90

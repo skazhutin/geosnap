@@ -20,6 +20,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from ml.indexing import FaissExactIndex, FaissIndexWorker, RetrievalResult
 from ml.retrieval import BaseRetriever, create_retriever
+from ml.retrieval.query_aggregation import SUPPORTED_QUERY_AGGREGATIONS, embed_aggregated_query
+from ml.runtime_config import FrozenRuntimeConfig, RuntimeConfigError
 
 from .estimators import CoordinateEstimator
 from .pipeline import LocalizerConfig, SpatialLocalizer
@@ -47,6 +49,24 @@ def _optional_env_bool(name: str) -> bool | None:
     raise ValueError(f"{name} must be auto, true, or false")
 
 
+def _frozen_env_matches(raw: str, configured: Any) -> bool:
+    if isinstance(configured, Path):
+        return Path(raw).expanduser().resolve() == configured.expanduser().resolve()
+    if isinstance(configured, bool):
+        return raw.strip().lower() in ({"1", "true", "yes", "on"} if configured else {"0", "false", "no", "off"})
+    if isinstance(configured, int):
+        try:
+            return int(raw) == configured
+        except ValueError:
+            return False
+    if isinstance(configured, float):
+        try:
+            return float(raw) == configured
+        except ValueError:
+            return False
+    return raw == str(configured)
+
+
 class LocalizationService:
     """Own one model and one exact gallery index for the process lifetime."""
 
@@ -61,9 +81,12 @@ class LocalizationService:
         expected_city_id: str | None = None,
         expected_index_id: str | None = None,
         geometric_reranker: Any | None = None,
+        query_aggregation: str = "single",
     ) -> None:
         if top_k < 1:
             raise ValueError("top_k must be >= 1")
+        if query_aggregation not in SUPPORTED_QUERY_AGGREGATIONS:
+            raise ValueError(f"unsupported query aggregation {query_aggregation!r}")
         self.retriever = retriever
         self.index_dir = Path(index_dir)
         self.localizer = localizer or SpatialLocalizer()
@@ -71,6 +94,7 @@ class LocalizationService:
         self.expected_city_id = expected_city_id
         self.expected_index_id = expected_index_id
         self.geometric_reranker = geometric_reranker
+        self.query_aggregation = query_aggregation
         self.process_isolate_faiss = (
             sys.platform == "darwin" if process_isolate_faiss is None else process_isolate_faiss
         )
@@ -269,7 +293,11 @@ class LocalizationService:
 
         query_started = perf_counter()
         embedding_started = perf_counter()
-        descriptor = self.retriever.embed_query(self._query_image(query))
+        descriptor = embed_aggregated_query(
+            self.retriever,
+            self._query_image(query),
+            policy=self.query_aggregation,
+        )
         embedding_ms = _elapsed_ms(embedding_started)
 
         retrieval_started = perf_counter()
@@ -412,34 +440,139 @@ def create_localization_service() -> LocalizationService:
     backend settings and HTTP objects.
     """
 
-    retriever_name = os.environ.get("RETRIEVER", "megaloc")
+    frozen_path = os.environ.get("GEOSNAP_RUNTIME_CONFIG")
+    frozen = FrozenRuntimeConfig.load(frozen_path, verify_index=True) if frozen_path else None
+
+    def frozen_value(env_name: str, configured: Any, default: Any) -> Any:
+        if frozen is None:
+            return os.environ.get(env_name, default)
+        if env_name in os.environ and not _frozen_env_matches(os.environ[env_name], configured):
+            raise RuntimeConfigError(
+                f"{env_name} conflicts with frozen runtime configuration {frozen.sha256}"
+            )
+        return configured
+
+    retriever_name = str(
+        frozen_value("RETRIEVER", None if frozen is None else frozen.retriever, "megaloc")
+    )
     model_cache = os.environ.get("MODEL_CACHE") or os.environ.get("GEOSNAP_MODEL_CACHE")
     device = os.environ.get("TORCH_DEVICE", "auto")
     batch_size = int(os.environ.get("EMBEDDING_BATCH_SIZE", "8"))
-    top_k = int(os.environ.get("RETRIEVAL_TOP_K", "20"))
+    top_k = int(frozen_value("RETRIEVAL_TOP_K", None if frozen is None else frozen.top_k, "20"))
+    query_aggregation = str(
+        frozen_value(
+            "QUERY_AGGREGATION",
+            None if frozen is None else frozen.query_aggregation,
+            "single",
+        )
+    )
     index_path = Path(os.environ.get("FAISS_INDEX_PATH", "data/indexes/moscow/index.faiss"))
-    index_dir = Path(os.environ.get("GEOSNAP_INDEX_DIR", str(index_path.parent)))
+    index_dir = Path(
+        frozen_value(
+            "GEOSNAP_INDEX_DIR",
+            None if frozen is None else frozen.index_dir,
+            str(index_path.parent),
+        )
+    )
     confidence_threshold = float(
-        os.environ.get("CONFIDENCE_THRESHOLD", str(LocalizerConfig().confidence_threshold))
+        frozen_value(
+            "CONFIDENCE_THRESHOLD",
+            None if frozen is None else frozen.confidence_threshold,
+            str(LocalizerConfig().confidence_threshold),
+        )
     )
-    cluster_radius_m = float(os.environ.get("LOCALIZATION_CLUSTER_RADIUS_M", "100"))
-    max_cluster_diameter_m = float(os.environ.get("LOCALIZATION_MAX_CLUSTER_DIAMETER_M", "150"))
-    out_of_coverage_similarity = float(os.environ.get("OOC_SIMILARITY_THRESHOLD", "0.15"))
-    confident_similarity = float(os.environ.get("CONFIDENT_SIMILARITY_THRESHOLD", "0.65"))
-    geographic_margin = float(os.environ.get("GOOD_GEOGRAPHIC_MARGIN", "0.08"))
-    minimum_cluster_mass = float(os.environ.get("MINIMUM_CLUSTER_MASS", "0.45"))
-    minimum_cluster_mass_margin = float(os.environ.get("MINIMUM_CLUSTER_MASS_MARGIN", "0.10"))
+    frozen_localization = {} if frozen is None else frozen.payload["localization"]
+    cluster_radius_m = float(
+        frozen_value("LOCALIZATION_CLUSTER_RADIUS_M", frozen_localization.get("cluster_radius_m"), "100")
+    )
+    max_cluster_diameter_m = float(
+        frozen_value(
+            "LOCALIZATION_MAX_CLUSTER_DIAMETER_M",
+            frozen_localization.get("max_cluster_diameter_m"),
+            "150",
+        )
+    )
+    out_of_coverage_similarity = float(
+        frozen_value(
+            "OOC_SIMILARITY_THRESHOLD",
+            frozen_localization.get("out_of_coverage_similarity"),
+            "0.15",
+        )
+    )
+    confident_similarity = float(
+        frozen_value(
+            "CONFIDENT_SIMILARITY_THRESHOLD",
+            frozen_localization.get("confident_similarity"),
+            "0.65",
+        )
+    )
+    geographic_margin = float(
+        frozen_value(
+            "GOOD_GEOGRAPHIC_MARGIN",
+            frozen_localization.get("good_geographic_margin"),
+            "0.08",
+        )
+    )
+    minimum_cluster_mass = float(
+        frozen_value(
+            "MINIMUM_CLUSTER_MASS",
+            frozen_localization.get("minimum_cluster_mass"),
+            "0.45",
+        )
+    )
+    minimum_cluster_mass_margin = float(
+        frozen_value(
+            "MINIMUM_CLUSTER_MASS_MARGIN",
+            frozen_localization.get("minimum_cluster_mass_margin"),
+            "0.10",
+        )
+    )
     minimum_cluster_candidates = int(
-        os.environ.get("MINIMUM_CLUSTER_CANDIDATES", "2")
+        frozen_value(
+            "MINIMUM_CLUSTER_CANDIDATES",
+            frozen_localization.get("minimum_cluster_candidates"),
+            "2",
+        )
     )
-    hypothesis_separation_m = float(os.environ.get("GOOD_HYPOTHESIS_SEPARATION_M", "500"))
-    estimator = CoordinateEstimator(os.environ.get("COORDINATE_ESTIMATOR", CoordinateEstimator.WEIGHTED_MEDOID.value))
-    city_id = os.environ.get("CITY_ID", "moscow")
-    index_id = os.environ.get("INDEX_ID", "moscow")
+    score_temperature = float(
+        frozen_value(
+            "LOCALIZATION_SCORE_TEMPERATURE",
+            frozen_localization.get("score_temperature"),
+            "0.08",
+        )
+    )
+    hypothesis_separation_m = float(
+        frozen_value(
+            "GOOD_HYPOTHESIS_SEPARATION_M",
+            frozen_localization.get("good_hypothesis_separation_m"),
+            "500",
+        )
+    )
+    estimator = CoordinateEstimator(
+        frozen_value(
+            "COORDINATE_ESTIMATOR",
+            None if frozen is None else frozen.estimator,
+            CoordinateEstimator.WEIGHTED_MEDOID.value,
+        )
+    )
+    city_id = str(frozen_value("CITY_ID", None if frozen is None else frozen.city_id, "moscow"))
+    index_id = str(frozen_value("INDEX_ID", None if frozen is None else frozen.index_id, "moscow"))
     process_isolation = _optional_env_bool("FAISS_PROCESS_ISOLATION")
     from ml.verification import GeometricReranker, VerificationConfig, build_verifier
 
-    verification_config = VerificationConfig.from_env()
+    if frozen is None:
+        verification_config = VerificationConfig.from_env()
+    else:
+        verification = frozen.payload.get("verification", {})
+        verification_values = {
+            "VERIFICATION_ENABLED": str(bool(verification.get("enabled", False))).lower(),
+            "VERIFY_TOP_K": str(verification.get("verify_top_k", 10)),
+            "VERIFICATION_BACKEND": str(verification.get("backend", "opencv_sift")),
+            "VERIFICATION_GEOMETRIC_WEIGHT": str(verification.get("geometric_weight", 0.35)),
+        }
+        for key, value in verification_values.items():
+            frozen_value(key, value, value)
+        verification_config = VerificationConfig.from_env(verification_values)
     geometric_reranker = None
     if verification_config.enabled:
         verifier = build_verifier(verification_config)
@@ -469,6 +602,7 @@ def create_localization_service() -> LocalizationService:
             minimum_cluster_mass_margin=minimum_cluster_mass_margin,
             minimum_cluster_candidates=minimum_cluster_candidates,
             good_hypothesis_separation_m=hypothesis_separation_m,
+            score_temperature=score_temperature,
         )
     )
     return LocalizationService(
@@ -480,4 +614,5 @@ def create_localization_service() -> LocalizationService:
         expected_city_id=city_id,
         expected_index_id=index_id,
         geometric_reranker=geometric_reranker,
+        query_aggregation=query_aggregation,
     )

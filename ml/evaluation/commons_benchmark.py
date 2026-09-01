@@ -165,6 +165,20 @@ def _faiss_process(
                         "request_id": request_id,
                         "matches": [match.to_dict() for match in matches],
                     }
+                elif operation == "diagnose":
+                    if index is None:
+                        raise BenchmarkError("exact FAISS index has not been built")
+                    diagnostics = index.diagnose_one(
+                        request["query"],
+                        true_lat=float(request["true_lat"]),
+                        true_lon=float(request["true_lon"]),
+                        distance_thresholds_m=tuple(request["distance_thresholds_m"]),
+                    )
+                    response = {
+                        "kind": "diagnostics",
+                        "request_id": request_id,
+                        "diagnostics": diagnostics,
+                    }
                 else:
                     raise BenchmarkError(f"unknown exact-search operation: {operation!r}")
             except BaseException as exc:
@@ -360,6 +374,25 @@ class IsolatedFaissExactSearch(AbstractContextManager["IsolatedFaissExactSearch"
         if response.get("kind") != "result":
             raise BenchmarkError(f"unexpected exact FAISS search response: {response}")
         return [RetrievalResult(**row) for row in response["matches"]]
+
+    def diagnose_one(
+        self,
+        query: np.ndarray,
+        *,
+        true_lat: float,
+        true_lon: float,
+        distance_thresholds_m: Sequence[float] = (25.0, 50.0, 100.0),
+    ) -> dict[str, Any]:
+        response = self._request(
+            "diagnose",
+            query=np.asarray(query, dtype=np.float32),
+            true_lat=float(true_lat),
+            true_lon=float(true_lon),
+            distance_thresholds_m=[float(value) for value in distance_thresholds_m],
+        )
+        if response.get("kind") != "diagnostics":
+            raise BenchmarkError(f"unexpected exact FAISS diagnostics response: {response}")
+        return dict(response["diagnostics"])
 
     def close(self, *, force: bool = False) -> None:
         process = self._process

@@ -439,6 +439,86 @@ class FaissExactIndex:
     def search_one(self, query: np.ndarray, *, k: int = 10) -> list[RetrievalResult]:
         return self.search(query, k=k)[0]
 
+    def diagnose_one(
+        self,
+        query: np.ndarray,
+        *,
+        true_lat: float,
+        true_lon: float,
+        distance_thresholds_m: Sequence[float] = (25.0, 50.0, 100.0),
+    ) -> dict[str, Any]:
+        """Summarize full-gallery positive ranks without materializing match objects."""
+
+        thresholds = tuple(float(value) for value in distance_thresholds_m)
+        if not thresholds or any(value <= 0 for value in thresholds):
+            raise ValueError("distance thresholds must be positive")
+        array = np.asarray(query, dtype=np.float32)
+        if array.ndim == 1:
+            array = array.reshape(1, -1)
+        if array.shape != (1, self.descriptor_dim):
+            raise FaissIndexError(f"query shape must be (1, {self.descriptor_dim}), got {array.shape}")
+        normalized = l2_normalize(array)
+        scores, rows = self._index.search(normalized, self.size)
+        try:
+            gallery_lat = np.asarray(
+                [float(metadata["lat"]) for metadata in self.reference_metadata], dtype=np.float64
+            )
+            gallery_lon = np.asarray(
+                [float(metadata["lon"]) for metadata in self.reference_metadata], dtype=np.float64
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise FaissIndexError("full-rank diagnostics require finite lat/lon metadata") from exc
+        if not np.isfinite(gallery_lat).all() or not np.isfinite(gallery_lon).all():
+            raise FaissIndexError("full-rank diagnostics require finite lat/lon metadata")
+        query_lat = np.radians(float(true_lat))
+        query_lon = np.radians(float(true_lon))
+        latitudes = np.radians(gallery_lat)
+        delta_lat = latitudes - query_lat
+        delta_lon = np.radians(gallery_lon) - query_lon
+        haversine = np.sin(delta_lat / 2.0) ** 2 + np.cos(query_lat) * np.cos(latitudes) * (
+            np.sin(delta_lon / 2.0) ** 2
+        )
+        distances = 2.0 * 6_371_008.8 * np.arcsin(np.sqrt(np.clip(haversine, 0.0, 1.0)))
+        ranked_rows = rows[0].astype(np.int64, copy=False)
+        ranked_distances = distances[ranked_rows]
+        ranked_scores = scores[0]
+        diagnostics: dict[str, Any] = {}
+        for threshold in thresholds:
+            positive_positions = np.flatnonzero(ranked_distances <= threshold)
+            negative_positions = np.flatnonzero(ranked_distances > threshold)
+            key = str(int(threshold) if threshold.is_integer() else threshold)
+            if not len(positive_positions):
+                diagnostics[key] = {
+                    "positive_rank": None,
+                    "positive_score": None,
+                    "best_incorrect_score": None if not len(negative_positions) else float(ranked_scores[negative_positions[0]]),
+                    "positive_minus_best_incorrect_margin": None,
+                    "positive_reference": None,
+                }
+                continue
+            position = int(positive_positions[0])
+            row = int(ranked_rows[position])
+            positive_score = float(ranked_scores[position])
+            incorrect_score = None if not len(negative_positions) else float(ranked_scores[negative_positions[0]])
+            diagnostics[key] = {
+                "positive_rank": position + 1,
+                "positive_score": positive_score,
+                "best_incorrect_score": incorrect_score,
+                "positive_minus_best_incorrect_margin": (
+                    None if incorrect_score is None else positive_score - incorrect_score
+                ),
+                "positive_reference": {
+                    "reference_id": self.reference_ids[row],
+                    "distance_m": float(ranked_distances[position]),
+                    "metadata": self.reference_metadata[row],
+                },
+            }
+        return {
+            "gallery_size": self.size,
+            "rank_scope": "complete_exact_gallery",
+            "by_positive_distance_m": diagnostics,
+        }
+
     def save(self, directory: str | Path) -> Path:
         faiss = _import_faiss()
         directory = Path(directory)

@@ -15,11 +15,13 @@ import json
 import os
 import platform
 import re
+import resource
 import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -48,12 +50,15 @@ from ml.localization.estimators import CoordinateEstimator
 from ml.query_quality import measure_query_image_quality
 from ml.retrieval import BaseRetriever, create_retriever
 from ml.retrieval.base import l2_normalize
+from ml.retrieval.embedding_job import load_embedding_artifacts
+from ml.retrieval.query_aggregation import SUPPORTED_QUERY_AGGREGATIONS, embed_aggregated_query
+from ml.runtime_config import FrozenRuntimeConfig
 
 BENCHMARK_KIND = "real_moscow_street_view"
 REPORT_SCHEMA_VERSION = 1
 POSITIVE_DISTANCE_THRESHOLD_M = 100.0
 LOCALIZATION_THRESHOLDS_M = (25, 50, 100)
-RECALL_KS = (1, 5, 10)
+RECALL_KS = (1, 5, 10, 20, 50)
 AREA_COLUMNS = (
     "area_id",
     "evaluation_area_h3",
@@ -128,6 +133,8 @@ class GalleryBuildStats:
     descriptor_dtype: str
     descriptor_itemsize: int
     descriptor_storage_bytes: int
+    embedding_source: str = "computed"
+    embedding_artifact_generation: str | None = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -145,6 +152,13 @@ def _package_version(name: str) -> str | None:
         return version(name)
     except Exception:
         return None
+
+
+def _peak_process_rss_bytes() -> int:
+    """Return peak parent-process RSS with Unix platform units normalized."""
+
+    value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    return value if sys.platform == "darwin" else value * 1024
 
 
 def _json_safe(value: Any) -> Any:
@@ -550,6 +564,71 @@ def _reference_metadata(row: ManifestRow) -> dict[str, Any]:
     }
 
 
+def _local_gallery_density(queries: LoadedManifest, gallery: LoadedManifest) -> dict[str, int]:
+    gallery_lat = np.radians([float(row.values["lat"]) for row in gallery.rows])
+    gallery_lon = np.radians([float(row.values["lon"]) for row in gallery.rows])
+    densities: dict[str, int] = {}
+    for query in queries.rows:
+        query_lat = np.radians(float(query.values["lat"]))
+        query_lon = np.radians(float(query.values["lon"]))
+        delta_lat = gallery_lat - query_lat
+        delta_lon = gallery_lon - query_lon
+        haversine = np.sin(delta_lat / 2.0) ** 2 + np.cos(query_lat) * np.cos(gallery_lat) * (
+            np.sin(delta_lon / 2.0) ** 2
+        )
+        distances = 2.0 * 6_371_008.8 * np.arcsin(np.sqrt(np.clip(haversine, 0.0, 1.0)))
+        densities[query.reference_id] = int(np.sum(distances <= 100.0))
+    return densities
+
+
+def _optional_finite_float(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if np.isfinite(result) else None
+
+
+def _positive_slice_fields(
+    query_values: Mapping[str, Any],
+    diagnostics: Mapping[str, Any],
+    *,
+    local_density: int,
+) -> dict[str, Any]:
+    positive = diagnostics["by_positive_distance_m"]["100"].get("positive_reference")
+    metadata = positive.get("metadata", {}) if isinstance(positive, Mapping) else {}
+    query_provider = str(query_values.get("source") or "unknown").lower()
+    positive_provider = str(metadata.get("source") or "missing_positive").lower()
+    query_heading = _optional_finite_float(query_values.get("heading"))
+    positive_heading = _optional_finite_float(metadata.get("heading"))
+    if query_heading is None or positive_heading is None:
+        heading_bucket = "missing"
+    else:
+        gap = abs((query_heading - positive_heading + 180.0) % 360.0 - 180.0)
+        heading_bucket = "lt45" if gap < 45 else ("45_89" if gap < 90 else "ge90")
+    query_time = _optional_text(query_values.get("captured_at"))
+    positive_time = _optional_text(metadata.get("captured_at"))
+    try:
+        gap_days = abs(
+            (
+                datetime.fromisoformat(query_time.replace("Z", "+00:00"))
+                - datetime.fromisoformat(positive_time.replace("Z", "+00:00"))
+            ).total_seconds()
+        ) / 86_400.0
+    except (AttributeError, TypeError, ValueError):
+        temporal_bucket = "missing"
+    else:
+        temporal_bucket = "lt30d" if gap_days < 30 else ("30_364d" if gap_days < 365 else "ge365d")
+    density_bucket = "1" if local_density <= 1 else ("2_4" if local_density <= 4 else "ge5")
+    return {
+        "local_gallery_density_100m": local_density,
+        "local_gallery_density_bucket": density_bucket,
+        "positive_provider_pair": f"{query_provider}->{positive_provider}",
+        "positive_heading_gap_bucket": heading_bucket,
+        "positive_temporal_gap_bucket": temporal_bucket,
+    }
+
+
 def _streamed_build_methods(exact_search: ExactSearch) -> tuple[Callable[..., Any], ...] | None:
     """Return the optional bounded-build lifecycle offered by the FAISS worker."""
 
@@ -566,6 +645,7 @@ def _build_gallery_search(
     retriever: BaseRetriever,
     exact_search: ExactSearch,
     model_metadata: Mapping[str, Any],
+    gallery_embedding_dir: str | Path | None = None,
 ) -> GalleryBuildStats:
     """Embed the gallery without retaining a full descriptor matrix when supported.
 
@@ -575,8 +655,60 @@ def _build_gallery_search(
     contract.
     """
 
-    streamed_methods = _streamed_build_methods(exact_search)
     expected_dimension = int(model_metadata["descriptor_dim"])
+    if gallery_embedding_dir is not None:
+        descriptors, ids, _, artifact_metadata = load_embedding_artifacts(gallery_embedding_dir)
+        expected_ids = [row.reference_id for row in gallery_rows]
+        if ids != expected_ids:
+            raise MoscowBenchmarkError(
+                "precomputed gallery embedding IDs do not exactly match the ordered gallery manifest"
+            )
+        expected_model = dict(model_metadata)
+        actual_model = dict(artifact_metadata.get("retriever", {}))
+        expected_model.pop("device", None)
+        actual_model.pop("device", None)
+        if actual_model != expected_model:
+            raise MoscowBenchmarkError("precomputed gallery embeddings do not match the loaded retriever")
+        if descriptors.shape != (len(gallery_rows), expected_dimension):
+            raise MoscowBenchmarkError("precomputed gallery descriptor shape is inconsistent")
+        streamed_methods = _streamed_build_methods(exact_search)
+        started = time.perf_counter()
+        if streamed_methods is None:
+            exact_search.build(
+                descriptors,
+                expected_ids,
+                [_reference_metadata(row) for row in gallery_rows],
+                model_metadata,
+            )
+        else:
+            begin_build, add_batch, finish_build = streamed_methods
+            begin_build(
+                descriptor_dim=expected_dimension,
+                expected_size=len(gallery_rows),
+                retriever_metadata=model_metadata,
+            )
+            batch_size = max(int(getattr(retriever, "batch_size", 1)), 1)
+            for offset in range(0, len(gallery_rows), batch_size):
+                batch = gallery_rows[offset : offset + batch_size]
+                add_batch(
+                    np.asarray(descriptors[offset : offset + len(batch)], dtype=np.float32),
+                    expected_ids[offset : offset + len(batch)],
+                    [_reference_metadata(row) for row in batch],
+                )
+            finish_build()
+        dtype = np.dtype(descriptors.dtype)
+        return GalleryBuildStats(
+            gallery_embedding_seconds=0.0,
+            exact_faiss_build_ms=(time.perf_counter() - started) * 1000.0,
+            descriptor_dimension=expected_dimension,
+            descriptor_dtype=str(dtype),
+            descriptor_itemsize=int(dtype.itemsize),
+            descriptor_storage_bytes=int(descriptors.nbytes),
+            embedding_source="validated_precomputed_artifact",
+            embedding_artifact_generation=str(artifact_metadata["artifact_generation"]),
+        )
+
+    streamed_methods = _streamed_build_methods(exact_search)
     if streamed_methods is None:
         gallery_paths = [row.image_path for row in gallery_rows]
         started = time.perf_counter()
@@ -683,6 +815,7 @@ def _evaluate_image(
     exact_search: ExactSearch,
     localizer: SpatialLocalizer,
     top_k: int,
+    query_aggregation: str = "single",
 ) -> tuple[list[RetrievalResult], LocalizationObservation, dict[str, float], dict[str, Any]]:
     end_to_end_started = time.perf_counter()
     started = time.perf_counter()
@@ -699,7 +832,7 @@ def _evaluate_image(
     query_preprocessing_ms = (time.perf_counter() - started) * 1000.0
 
     started = time.perf_counter()
-    descriptor = retriever.embed_query(prepared_image)
+    descriptor = embed_aggregated_query(retriever, prepared_image, policy=query_aggregation)
     descriptor = l2_normalize(descriptor)[0]
     query_embedding_ms = (time.perf_counter() - started) * 1000.0
     if descriptor.shape != (retriever.descriptor_dim,):
@@ -709,6 +842,17 @@ def _evaluate_image(
 
     started = time.perf_counter()
     matches = exact_search.search_one(descriptor, k=top_k)
+    diagnose = getattr(exact_search, "diagnose_one", None)
+    retrieval_diagnostics = (
+        diagnose(
+            descriptor,
+            true_lat=true_lat,
+            true_lon=true_lon,
+            distance_thresholds_m=(25.0, 50.0, 100.0),
+        )
+        if callable(diagnose)
+        else _top_k_rank_diagnostics(matches, true_lat=true_lat, true_lon=true_lon)
+    )
     exact_faiss_search_ms = (time.perf_counter() - started) * 1000.0
 
     started = time.perf_counter()
@@ -768,8 +912,57 @@ def _evaluate_image(
             }
             for match in matches
         ],
+        "retrieval_diagnostics": retrieval_diagnostics,
     }
     return matches, observation, timings, per_query
+
+
+def _top_k_rank_diagnostics(
+    matches: Sequence[RetrievalResult],
+    *,
+    true_lat: float,
+    true_lon: float,
+) -> dict[str, Any]:
+    """Fallback for injected searches; positive ranks beyond top-k remain censored."""
+
+    by_distance: dict[str, Any] = {}
+    distances = [
+        haversine_m(true_lat, true_lon, float(match.lat), float(match.lon)) for match in matches
+    ]
+    for threshold in (25.0, 50.0, 100.0):
+        positives = [index for index, distance in enumerate(distances) if distance <= threshold]
+        negatives = [index for index, distance in enumerate(distances) if distance > threshold]
+        key = str(int(threshold))
+        if not positives:
+            by_distance[key] = {
+                "positive_rank": None,
+                "positive_score": None,
+                "best_incorrect_score": None if not negatives else matches[negatives[0]].score,
+                "positive_minus_best_incorrect_margin": None,
+                "positive_reference": None,
+            }
+            continue
+        position = positives[0]
+        match = matches[position]
+        incorrect_score = None if not negatives else matches[negatives[0]].score
+        by_distance[key] = {
+            "positive_rank": position + 1,
+            "positive_score": match.score,
+            "best_incorrect_score": incorrect_score,
+            "positive_minus_best_incorrect_margin": (
+                None if incorrect_score is None else match.score - incorrect_score
+            ),
+            "positive_reference": {
+                "reference_id": match.reference_id,
+                "distance_m": distances[position],
+                "metadata": match.metadata,
+            },
+        }
+    return {
+        "gallery_size": None,
+        "rank_scope": f"top_{len(matches)}_censored",
+        "by_positive_distance_m": by_distance,
+    }
 
 
 def _false_confident_errors(
@@ -820,13 +1013,26 @@ def _metrics_payload(
         observations,
         thresholds_m=LOCALIZATION_THRESHOLDS_M,
     ).to_dict()
+    answered_errors = [
+        float(row["error_m"])
+        for row in per_query
+        if row.get("status") == "ok" and row.get("error_m") is not None
+    ]
+    correct = sum(value <= 100.0 for value in answered_errors)
+    localization["conditional_accuracy_within_100m_wilson_interval_95"] = _wilson_interval(
+        correct, len(answered_errors)
+    )
+    localization["accepted_error_m"] = _summary(answered_errors)
+    available_k = min((len(matches) for matches in predictions.values()), default=0)
+    recall_ks = tuple(value for value in RECALL_KS if value <= available_k)
     return {
         "retrieval": evaluate_retrieval(
             truths,
             predictions,
             positive_distance_threshold_m=POSITIVE_DISTANCE_THRESHOLD_M,
-            ks=RECALL_KS,
+            ks=recall_ks,
         ).to_dict(),
+        "retrieval_diagnostics": _retrieval_diagnostics_payload(per_query, recall_ks=recall_ks),
         "localization": localization,
         "confidence_buckets": localization["confidence_buckets"],
         "false_confident_errors": _false_confident_errors(
@@ -841,6 +1047,89 @@ def _metrics_payload(
     }
 
 
+def _summary(values: Sequence[float]) -> dict[str, float | int | None]:
+    if not values:
+        return {"count": 0, "median": None, "p75": None, "p90": None, "p95": None}
+    array = np.asarray(values, dtype=np.float64)
+    return {
+        "count": len(values),
+        "median": float(np.median(array)),
+        "p75": float(np.percentile(array, 75)),
+        "p90": float(np.percentile(array, 90)),
+        "p95": float(np.percentile(array, 95)),
+    }
+
+
+def _wilson_interval(successes: int, trials: int) -> list[float | None]:
+    if trials == 0:
+        return [None, None]
+    z = 1.959963984540054
+    probability = successes / trials
+    z_squared = z * z
+    denominator = 1.0 + z_squared / trials
+    center = probability + z_squared / (2.0 * trials)
+    margin = z * np.sqrt((probability * (1.0 - probability) + z_squared / (4.0 * trials)) / trials)
+    return [float((center - margin) / denominator), float((center + margin) / denominator)]
+
+
+def _slice_recall(rows: Sequence[Mapping[str, Any]], *, key: str) -> dict[str, Any]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get(key) or "unknown"), []).append(row)
+    result: dict[str, Any] = {}
+    for label, group in sorted(grouped.items()):
+        ranks = [row["retrieval_diagnostics"]["by_positive_distance_m"]["100"]["positive_rank"] for row in group]
+        result[label] = {
+            "queries": len(group),
+            "recall_at_10": sum(rank is not None and int(rank) <= 10 for rank in ranks) / len(group),
+            "recall_at_20": sum(rank is not None and int(rank) <= 20 for rank in ranks) / len(group),
+            "recall_at_50": sum(rank is not None and int(rank) <= 50 for rank in ranks) / len(group),
+        }
+    return result
+
+
+def _retrieval_diagnostics_payload(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    recall_ks: Sequence[int],
+) -> dict[str, Any]:
+    by_threshold: dict[str, Any] = {}
+    for threshold in (25, 50, 100):
+        key = str(threshold)
+        ranks = [row["retrieval_diagnostics"]["by_positive_distance_m"][key]["positive_rank"] for row in rows]
+        observed_ranks = [float(rank) for rank in ranks if rank is not None]
+        margins = [
+            row["retrieval_diagnostics"]["by_positive_distance_m"][key][
+                "positive_minus_best_incorrect_margin"
+            ]
+            for row in rows
+        ]
+        observed_margins = [float(value) for value in margins if value is not None]
+        by_threshold[key] = {
+            "recall_at": {
+                str(k): sum(rank is not None and int(rank) <= k for rank in ranks) / len(rows)
+                for k in recall_ks
+            },
+            "positive_rank": _summary(observed_ranks),
+            "missing_positive_count": sum(rank is None for rank in ranks),
+            "positive_minus_best_incorrect_similarity_margin": _summary(observed_margins),
+        }
+    return {
+        "rank_scope": sorted(
+            {str(row["retrieval_diagnostics"]["rank_scope"]) for row in rows}
+        ),
+        "by_positive_distance_m": by_threshold,
+        "slices": {
+            "query_provider": _slice_recall(rows, key="source"),
+            "region_h3_coarse": _slice_recall(rows, key="h3_coarse"),
+            "local_gallery_density_100m": _slice_recall(rows, key="local_gallery_density_bucket"),
+            "provider_pair": _slice_recall(rows, key="positive_provider_pair"),
+            "heading_gap": _slice_recall(rows, key="positive_heading_gap_bucket"),
+            "temporal_gap": _slice_recall(rows, key="positive_temporal_gap_bucket"),
+        },
+    }
+
+
 def _run_robustness(
     *,
     queries: LoadedManifest,
@@ -849,6 +1138,7 @@ def _run_robustness(
     localizer: SpatialLocalizer,
     output_dir: Path,
     top_k: int,
+    query_aggregation: str,
 ) -> dict[str, Any]:
     truths: list[QueryGroundTruth] = []
     predictions: dict[str, Sequence[RetrievalResult]] = {}
@@ -883,6 +1173,7 @@ def _run_robustness(
                 exact_search=exact_search,
                 localizer=localizer,
                 top_k=top_k,
+                query_aggregation=query_aggregation,
             )
             row.update(
                 {
@@ -1054,6 +1345,10 @@ def _markdown_report(payload: Mapping[str, Any]) -> str:
         p90 = "n/a" if values["p90_ms"] is None else f"{values['p90_ms']:.2f}"
         lines.append(f"| {stage} | {values['count']} | {median} | {p90} |")
     runtime = payload["runtime"]
+    embedding_throughput = primary["latency"]["gallery_embedding_images_per_second"]
+    embedding_throughput_text = (
+        "n/a" if embedding_throughput is None else f"{embedding_throughput:.2f} images/s"
+    )
     lines.extend(
         [
             "",
@@ -1064,12 +1359,13 @@ def _markdown_report(payload: Mapping[str, Any]) -> str:
             f"- Revision: `{payload['model'].get('revision')}`",
             f"- Model load: {runtime['model_load_ms']:.2f} ms",
             f"- Gallery embedding: {runtime['gallery_embedding_ms']:.2f} ms "
-            f"({primary['latency']['gallery_embedding_images_per_second']:.2f} images/s)",
+            f"({embedding_throughput_text})",
             f"- Exact FAISS build: {runtime['exact_faiss_build_ms']:.2f} ms",
             f"- Descriptor dimension / dtype: {runtime['descriptor_dimension']} / `{runtime['descriptor_dtype']}`",
             f"- Gallery descriptors: {runtime['gallery_descriptor_storage_bytes']} bytes",
             f"- Query descriptors (logical total): {runtime['query_descriptor_storage_bytes']} bytes",
             f"- Exact FAISS vector payload: {runtime['exact_faiss_vector_storage_bytes']} bytes",
+            f"- Peak benchmark-process RSS: {runtime['peak_process_rss_bytes']} bytes",
             "",
         ]
     )
@@ -1141,6 +1437,9 @@ def run_moscow_benchmark(
     robustness: bool = False,
     search_factory: Callable[[], ExactSearch] = _real_moscow_exact_search,
     localizer: SpatialLocalizer | None = None,
+    gallery_embedding_dir: str | Path | None = None,
+    runtime_config_path: str | Path | None = None,
+    query_aggregation: str = "single",
 ) -> tuple[dict[str, Any], Path, Path]:
     """Run the primary and optional robustness benchmarks once.
 
@@ -1149,22 +1448,39 @@ def run_moscow_benchmark(
     and confidence threshold must exactly match the requested configuration.
     """
 
-    if top_k < max(RECALL_KS):
-        raise ValueError(f"top_k must be at least {max(RECALL_KS)} to report Recall@10")
+    if top_k < 10:
+        raise ValueError("top_k must be at least 10 to report Recall@10")
+    if query_aggregation not in SUPPORTED_QUERY_AGGREGATIONS:
+        raise ValueError(f"unsupported query aggregation {query_aggregation!r}")
     estimator_value = CoordinateEstimator(estimator)
     if not 0.0 <= confidence_threshold <= 1.0:
         raise ValueError("confidence_threshold must be in [0, 1]")
     _validate_expected_model(retriever, expected_model)
-    loaded = load_moscow_benchmark(gallery_manifest_path, query_manifest_path)
-    if len(loaded.gallery.rows) < max(RECALL_KS):
-        raise MoscowBenchmarkError("gallery must contain at least 10 references to report Recall@10")
-    if top_k > len(loaded.gallery.rows):
-        raise MoscowBenchmarkError("top_k cannot exceed gallery size")
-
     requested_config = LocalizerConfig(
         estimator=estimator_value,
         confidence_threshold=confidence_threshold,
     )
+    runtime_config = (
+        None
+        if runtime_config_path is None
+        else FrozenRuntimeConfig.load(runtime_config_path, verify_index=True)
+    )
+    if runtime_config is not None:
+        runtime_config.assert_benchmark_contract(
+            retriever=retriever.model_name,
+            top_k=top_k,
+            estimator=estimator_value.value,
+            confidence_threshold=confidence_threshold,
+            query_aggregation=query_aggregation,
+            gallery_manifest=gallery_manifest_path,
+            localization=_localizer_payload(requested_config),
+        )
+    loaded = load_moscow_benchmark(gallery_manifest_path, query_manifest_path)
+    if len(loaded.gallery.rows) < 10:
+        raise MoscowBenchmarkError("gallery must contain at least 10 references to report Recall@10")
+    if top_k > len(loaded.gallery.rows):
+        raise MoscowBenchmarkError("top_k cannot exceed gallery size")
+
     active_localizer = localizer or SpatialLocalizer(requested_config)
     if (
         active_localizer.config.estimator != estimator_value
@@ -1187,6 +1503,7 @@ def run_moscow_benchmark(
     predictions: dict[str, Sequence[RetrievalResult]] = {}
     observations: list[LocalizationObservation] = []
     per_query: list[dict[str, Any]] = []
+    local_density_by_query = _local_gallery_density(loaded.queries, loaded.gallery)
 
     # Start FAISS before importing/initializing Torch in the parent process.
     with search_factory() as exact_search:
@@ -1200,6 +1517,7 @@ def run_moscow_benchmark(
             retriever=retriever,
             exact_search=exact_search,
             model_metadata=model_metadata,
+            gallery_embedding_dir=gallery_embedding_dir,
         )
         gallery_embedding_seconds = gallery_build.gallery_embedding_seconds
         gallery_embedding_ms = gallery_embedding_seconds * 1000.0
@@ -1219,6 +1537,7 @@ def run_moscow_benchmark(
                 exact_search=exact_search,
                 localizer=active_localizer,
                 top_k=top_k,
+                query_aggregation=query_aggregation,
             )
             row.update(
                 {
@@ -1237,6 +1556,13 @@ def run_moscow_benchmark(
                     "attribution": values.get("attribution"),
                     "computed_image_sha256": query.image_sha256,
                 }
+            )
+            row.update(
+                _positive_slice_fields(
+                    values,
+                    row["retrieval_diagnostics"],
+                    local_density=local_density_by_query[query_id],
+                )
             )
             truths.append(
                 QueryGroundTruth(
@@ -1260,8 +1586,10 @@ def run_moscow_benchmark(
             timings=timings,
             per_query=per_query,
             confidence_threshold=active_localizer.config.confidence_threshold,
-            gallery_embedding_images=len(loaded.gallery.rows),
-            gallery_embedding_seconds=gallery_embedding_seconds,
+            gallery_embedding_images=(
+                len(loaded.gallery.rows) if gallery_embedding_seconds > 0 else None
+            ),
+            gallery_embedding_seconds=(gallery_embedding_seconds if gallery_embedding_seconds > 0 else None),
         )
         robustness_payload = (
             _run_robustness(
@@ -1271,6 +1599,7 @@ def run_moscow_benchmark(
                 localizer=active_localizer,
                 output_dir=output_path,
                 top_k=top_k,
+                query_aggregation=query_aggregation,
             )
             if robustness
             else None
@@ -1300,10 +1629,16 @@ def run_moscow_benchmark(
         },
         "leakage_audit": loaded.leakage_audit,
         "model": model_metadata,
+        "retrieval_configuration": {
+            "top_k": top_k,
+            "query_aggregation": query_aggregation,
+        },
         "localization": _localizer_payload(active_localizer.config),
         "runtime": {
             "model_load_ms": model_load_ms,
             "gallery_embedding_ms": gallery_embedding_ms,
+            "gallery_embedding_source": gallery_build.embedding_source,
+            "gallery_embedding_artifact_generation": gallery_build.embedding_artifact_generation,
             "exact_faiss_build_ms": exact_faiss_build_ms,
             "descriptor_dimension": descriptor_dimension,
             "descriptor_dtype": gallery_build.descriptor_dtype,
@@ -1312,6 +1647,7 @@ def run_moscow_benchmark(
                 len(loaded.queries.rows) * descriptor_dimension * descriptor_itemsize
             ),
             "exact_faiss_vector_storage_bytes": gallery_build.descriptor_storage_bytes,
+            "peak_process_rss_bytes": _peak_process_rss_bytes(),
             "exact_search_backend": "faiss.IndexFlatIP (L2-normalized descriptors, isolated process)",
             "environment": {
                 "platform": platform.platform(),
@@ -1325,6 +1661,15 @@ def run_moscow_benchmark(
         "primary": primary,
         "per_query": per_query,
         "robustness": robustness_payload,
+        "runtime_configuration": (
+            None
+            if runtime_config is None
+            else {
+                "path": str(runtime_config.path),
+                "sha256": runtime_config.sha256,
+                "contract_validated": True,
+            }
+        ),
     }
     stem = report_stem or f"{model_metadata['model_name']}_moscow_real_street_view"
     json_path, markdown_path = write_moscow_benchmark_reports(payload, output_path, stem=stem)
@@ -1377,6 +1722,21 @@ def main() -> None:
     )
     parser.add_argument("--report-stem")
     parser.add_argument("--robustness", action="store_true")
+    parser.add_argument(
+        "--query-aggregation",
+        choices=SUPPORTED_QUERY_AGGREGATIONS,
+        default="single",
+    )
+    parser.add_argument(
+        "--gallery-embedding-dir",
+        type=Path,
+        help="validated exact-order embedding artifact used instead of regenerating gallery descriptors",
+    )
+    parser.add_argument(
+        "--runtime-config",
+        type=Path,
+        help="frozen configuration contract; required for the one final test run",
+    )
     args = parser.parse_args()
 
     retriever = create_retriever(
@@ -1397,6 +1757,9 @@ def main() -> None:
             estimator=args.estimator,
             confidence_threshold=args.confidence_threshold,
             robustness=args.robustness,
+            gallery_embedding_dir=args.gallery_embedding_dir,
+            runtime_config_path=args.runtime_config,
+            query_aggregation=args.query_aggregation,
         )
     finally:
         retriever.close()

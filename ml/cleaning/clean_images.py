@@ -11,10 +11,17 @@ import pandas as pd
 
 from ml.cleaning.reporting import update_cleaning_report
 from ml.ingestion.common import validate_image_file, write_json
+from ml.ingestion.mapillary_citywide import AoiBoundary, load_aoi_boundary
 from ml.ingestion.schema import MOSCOW_BOUNDS, read_manifest, write_manifest
 
 
-def _valid_coordinate(city_id: str, lat: Any, lon: Any) -> bool:
+def _valid_coordinate(
+    city_id: str,
+    lat: Any,
+    lon: Any,
+    *,
+    aoi_boundary: AoiBoundary | None = None,
+) -> bool:
     try:
         latitude = float(lat)
         longitude = float(lon)
@@ -22,6 +29,8 @@ def _valid_coordinate(city_id: str, lat: Any, lon: Any) -> bool:
         return False
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         return False
+    if aoi_boundary is not None:
+        return aoi_boundary.covers(longitude, latitude)
     if city_id == "moscow":
         min_lat, max_lat, min_lon, max_lon = MOSCOW_BOUNDS
         return min_lat <= latitude <= max_lat and min_lon <= longitude <= max_lon
@@ -41,12 +50,14 @@ def run(
     *,
     min_width: int = 64,
     min_height: int = 64,
+    aoi_geojson: Path | None = None,
 ) -> dict[str, Any]:
     if min_size_bytes < 0:
         raise ValueError("min_size_bytes must be >= 0")
     if min_width < 1 or min_height < 1:
         raise ValueError("min_width and min_height must be >= 1")
     df = read_manifest(input_manifest, allow_empty=True)
+    aoi_boundary = load_aoi_boundary(aoi_geojson) if aoi_geojson is not None else None
     if "width" not in df.columns:
         df["width"] = pd.Series([pd.NA] * len(df), dtype="Int64")
     if "height" not in df.columns:
@@ -63,7 +74,12 @@ def run(
     }
     for index, row in df.iterrows():
         row_id = str(row.get("id") or "")
-        if not _valid_coordinate(str(row.get("city_id") or ""), row.get("lat"), row.get("lon")):
+        if not _valid_coordinate(
+            str(row.get("city_id") or ""),
+            row.get("lat"),
+            row.get("lon"),
+            aoi_boundary=aoi_boundary,
+        ):
             issues["invalid_coordinate"].append(row_id)
             continue
         validation = validate_image_file(
@@ -86,6 +102,8 @@ def run(
         "input_rows": int(len(df)),
         "output_rows": int(len(cleaned)),
         "dropped_rows": int(len(df) - len(cleaned)),
+        "coordinate_scope": "exact_aoi_polygon" if aoi_boundary is not None else "legacy_city_bounds",
+        "aoi_sha256": aoi_boundary.sha256 if aoi_boundary is not None else None,
         **{key: len(value) for key, value in issues.items()},
     }
     write_json(report_path, {"summary": summary, "issues": issues})
@@ -111,6 +129,7 @@ def main() -> None:
     parser.add_argument("--min-width", type=int, default=64)
     parser.add_argument("--min-height", type=int, default=64)
     parser.add_argument("--pipeline-report", default="data/processed/cleaning_report.json")
+    parser.add_argument("--aoi-geojson", type=Path, help="optional exact Polygon/MultiPolygon coordinate gate")
     args = parser.parse_args()
     run(
         input_manifest=Path(args.manifest),
@@ -120,6 +139,7 @@ def main() -> None:
         min_width=args.min_width,
         min_height=args.min_height,
         pipeline_report_path=Path(args.pipeline_report),
+        aoi_geojson=args.aoi_geojson,
     )
 
 
