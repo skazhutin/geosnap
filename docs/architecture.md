@@ -1,12 +1,13 @@
 # Архитектура GeoSnap
 
-Актуально на 2026-09-01. Этот документ описывает реализованную архитектуру и
+Актуально на 2026-09-03. Этот документ описывает реализованную архитектуру и
 границы данных, а не обещанную точность продукта. Production gallery имеет
 реальные Mapillary/KartaView references, но измеренное покрытие остаётся
-частичным. Current frozen v2 selection — MegaLoc, exact `IndexFlatIP`, K=50,
-single query, weighted medoid, verification off и fail-closed threshold `1.0`.
-Wilson objective на calibration infeasible; результаты и ограничения — в
-[phase2_quality_improvement.md](phase2_quality_improvement.md).
+частичным. Current frozen v3 selection — SAGE ViT-B, exact `IndexFlatIP`, K=30,
+single query, density-aware geographic mode voting, weighted medoid,
+verification off и calibrated logistic threshold `0.9349250249145314`.
+Результаты и ограничения — в
+[phase2_5_product_recovery.md](phase2_5_product_recovery.md).
 
 ## Граница production данных
 
@@ -16,9 +17,9 @@ Wilson objective на calibration infeasible; результаты и огран
 10 компонентов, SHA-256
 `33b5dbf852cb94e5292e7848974fba78641dd76339cad142e73b7419b5db4a8a`.
 
-Текущий v2 exact-AOI source manifest содержит 23 654 references (17 143
-Mapillary, 6 511 KartaView); leakage-resistant gallery/index содержит 19 524
-(16 605 / 2 919). В fixed 20×20 grid заняты 93 cells, только 30 dense-healthy,
+V2 exact-AOI source manifest содержит 23 654 references (17 143 Mapillary,
+6 511 KartaView); frozen v3 leakage-resistant gallery/index содержит 20 031
+(14 972 / 5 059). В fixed 20×20 grid заняты 93 cells, только 30 dense-healthy,
 поэтому `city_id=moscow` обозначает область данных, а не гарантию локализации в
 любой точке города.
 
@@ -40,7 +41,7 @@ flowchart LR
         Sources["Mapillary / KartaView"] --> Normalize["Нормализация и canonical manifest"]
         Normalize --> Download["Возобновляемая загрузка изображений"]
         Download --> Clean["Валидация → quality score → dedup → H3"]
-        Clean --> Embed["MegaLoc или DINOv2 + SALAD"]
+        Clean --> Embed["Pinned VPR retriever (current: SAGE)"]
         Embed --> Index["L2 descriptors + FAISS IndexFlatIP + ID sidecars"]
     end
 
@@ -156,21 +157,20 @@ orientation и RGB conversion.
 - формирует кластеры вокруг сильных anchors и проверяет расстояние до каждого
   члена, поэтому single-link цепочка не объединяет далёкие точки;
 - не смешивает разные `city_id`/`index_id` и не усредняет разные моды;
-- по умолчанию использует weighted geographic medoid сильнейшего компактного
-  кластера;
-- строит confidence из similarity, географического margin, cluster mass,
-  compactness, separation и лёгкой query-quality диагностики;
+- выбирает географическую моду с rank-, sequence-, provider-, density- и
+  compactness-aware evidence, затем использует weighted medoid;
+- строит calibrated logistic confidence из 14 интерпретируемых retrieval и
+  localization признаков без raw pixels;
 - возвращает `low_confidence` или `out_of_coverage`, когда evidence слабое;
 - оставляет `uncertainty_radius_m = null`, пока нет отдельной калибровки на
   leakage-resistant московском наборе.
 
-Текущая confidence-функция помечена `interpretable-v1-uncalibrated`: её число
-не является калиброванной вероятностью. V2 calibration максимизировала answer
-rate при Wilson lower 95% >=90%, но только 16 threshold-eligible correct rows
-дали lower bound 80,64%. Objective infeasible, поэтому tracked frozen config
-использует fail-closed threshold `1.0`. Service и benchmark загружают один
-`configs/moscow_real_v2_frozen.json` и отвергают конфликтующие model/K/
-localizer/index values. `uncertainty_radius_m` остаётся `null`.
+V3 confidence model fit только на development с group cross-validation;
+threshold выбран только на независимой calibration. Wilson interval остаётся
+reported evidence, а не kill-switch. Service загружает
+`configs/moscow_real_v3_frozen.json`, проверяет confidence/index hashes и
+отвергает конфликтующие model/K/localizer/index values.
+`uncertainty_radius_m` остаётся `null`.
 
 API не возвращает абсолютные пути, download URL, токены или stack traces.
 Thumbnail разрешается сервером по `reference_id` из доверенного index sidecar;
@@ -179,25 +179,24 @@ Thumbnail разрешается сервером по `reference_id` из до�
 
 ## Модели и protocol выбора
 
-MegaLoc и DINOv2+SALAD имеют официальные pinned checkpoint-backed adapters и
-строят L2-normalized descriptors размерности 8 448. На v2 calibration SALAD
-дал +5,37 pp R@20, но не прошёл major-region guard и остаётся evaluation-only
-по существующей checkpoint/GPL policy. MegaLoc five-crop не дал material gain
-и увеличил latency. Поэтому deployable selection остаётся single-query
-MegaLoc; это не утверждение о превосходстве в других городах или на любом
-unthresholded metric. Лицензии описаны в [licenses.md](licenses.md).
+MegaLoc, DINOv2+SALAD, SAGE и SelaVPR++ имеют pinned checkpoint-backed
+adapters. SALAD остаётся evaluation-only из-за GPL/checkpoint uncertainty.
+SelaVPR++ base и официальный two-stage reranker были проверены, но дали меньшую
+calibration product utility; CricaVPR отклонён из-за batch-dependent descriptor
+contract. Frozen selection — single-query SAGE ViT-B. Это не утверждение о
+превосходстве в других городах. Лицензии описаны в [licenses.md](licenses.md).
 
 Production retriever выбирается только следующим порядком:
 
-1. `make split-moscow-v2` публикует disjoint Mapillary/KartaView
-   gallery/calibration/test manifests с sequence, ID/source-ID, SHA-256 и pHash
-   leakage checks.
-2. Predeclared candidates запускаются на **calibration** с threshold `0.0` и
-   full-rank diagnostics.
-3. Model, K, estimator, Wilson result, threshold и index metadata связываются
-   в tracked frozen runtime config.
-4. V2 held-out test уже открыт один раз; следующая tuning iteration требует v3.
-5. `make smoke-moscow-v2` проверяет тот же gallery-only index/runtime contract.
+1. V3 публикует disjoint Mapillary/KartaView gallery/development/calibration/test
+   manifests с sequence, ID/source-ID, SHA-256, pHash и geographic embargo.
+2. Retriever, K, aggregation и confidence выбираются на development; final
+   confidence coefficients fit на development, threshold — на calibration.
+3. Model/checkpoint, K, aggregation, threshold, confidence artifact и index
+   hashes связываются в tracked frozen runtime config.
+4. V3 held-out test открыт ровно один раз после freeze; следующая tuning
+   iteration требует нового sealed namespace.
+5. Host smoke проверяет тот же frozen SAGE index/runtime contract.
 
 Commons proxy и MSLS-derived benchmarks не могут выбрать production model:
 первый — hand-curated landmark-biased proxy, второй — внешний benchmark/training
@@ -205,11 +204,13 @@ corpus, а оба не являются Mapillary/KartaView Moscow deployment da
 
 ## Текущие границы готовности
 
-- V2 source содержит 23 654, gallery/index — 19 524 references; подробности —
-  в [отчёте о данных](data_report.md).
-- V2 split содержит 503 calibration и 497 once-opened test queries. Он не
+- V2 source содержит 23 654, frozen v3 gallery/index — 20 031 references;
+  подробности — в [Part 2.5 отчёте](phase2_5_product_recovery.md).
+- V3 split содержит 602 development, 603 calibration и 1 195 once-opened test
+  queries. Он не
   означает full-city coverage: заняты 93/400 cells, dense-healthy только 30.
-- Frozen test answer rate равен 0%; публичный useful answer mode не обоснован.
+- Frozen test answer rate равен 7,70% при 94,57% conditional <=100 м, но три
+  accepted errors >500 м не проходят preferred <=1% catastrophic target.
 - OpenCV SIFT/LightGlue-compatible verification остаётся optional/default-off:
   real 100-query ablation дала нулевой all-query accuracy gain и median
   overhead +1 002 мс. Evidence и ограничения — в
@@ -217,7 +218,6 @@ corpus, а оба не являются Mapillary/KartaView Moscow deployment da
 - `uncertainty_radius_m` нельзя считать калиброванным только из confidence
   threshold; оно остаётся `null`, пока не появится отдельная проверенная
   uncertainty calibration.
-- Docker Compose configuration проверена статически; container runtime path
-  также прошёл `/ready` и настоящий `/localize` с текущими read-only
-  code/config/index. Чистый rebuild 17,5 GB image и публичная browser QA
-  остаются в Part 3.
+- Docker Compose configuration проверена статически; stale 17,5 GB image не
+  содержит новую locked dependency и не был перестроен. Clean slim rebuild и
+  публичная browser QA остаются в Part 3.

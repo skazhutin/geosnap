@@ -40,7 +40,13 @@ def _first_reference(index_dir: Path) -> tuple[str, Path]:
 def _index_configuration(index_dir: Path) -> tuple[str, str, str]:
     metadata = _read_json(index_dir / "index_metadata.json")
     retriever = (metadata.get("retriever") or {}).get("model_name")
-    mapping = {"megaloc": "megaloc", "dinov2-salad": "dinov2-salad"}
+    mapping = {
+        "megaloc": "megaloc",
+        "dinov2-salad": "dinov2-salad",
+        "sage-vitb": "sage-vitb",
+        "selavprplusplus-base": "selavprplusplus-base",
+        "selavprplusplus-base-rerank": "selavprplusplus-base-rerank",
+    }
     if retriever not in mapping:
         raise RuntimeError(f"index declares unsupported retriever {retriever!r}")
     city_id = metadata.get("city_id")

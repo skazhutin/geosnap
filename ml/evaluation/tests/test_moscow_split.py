@@ -630,6 +630,37 @@ def test_missing_sequence_rows_are_excluded_and_audited(tmp_path: Path) -> None:
     assert [row["source_image_id"] for row in missing] == ["missing-sequence"]
 
 
+def test_historical_query_sequences_remain_gallery_eligible_but_cannot_be_new_queries(
+    tmp_path: Path,
+) -> None:
+    manifest = _diverse_fixture(tmp_path)
+    source = read_manifest(manifest)
+    historical = tmp_path / "historical_queries.parquet"
+    write_manifest(source.loc[source["sequence_id"] == "a-sequence-0"].copy(), historical)
+
+    output = tmp_path / "historically-independent"
+    audit = run(
+        manifest,
+        output,
+        seed=77,
+        max_queries=4,
+        exclude_query_manifests=[historical],
+    )
+    queries = pd.concat(
+        [
+            read_manifest(output / "calibration_queries.parquet"),
+            read_manifest(output / "test_queries.parquet"),
+        ],
+        ignore_index=True,
+    )
+    gallery = read_manifest(output / "gallery.parquet")
+
+    assert "a-sequence-0" not in set(queries["sequence_id"].astype(str))
+    assert "a-sequence-0" in set(gallery["sequence_id"].astype(str))
+    assert audit["eligibility"]["historical_query_provider_sequences_excluded"] == 1
+    assert audit["eligibility"]["historical_query_exclusion_manifests"][0]["rows"] == 2
+
+
 def test_failed_rebuild_preserves_published_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import ml.evaluation.moscow_split as split_module
 

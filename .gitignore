@@ -17,6 +17,7 @@ __pycache__/
 logs/
 .cache/
 model_cache/
+data/models/**
 
 # Downloaded or generated data (small checked-in fixtures stay under tests/)
 data/raw/**

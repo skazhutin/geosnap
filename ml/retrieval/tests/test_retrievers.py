@@ -9,7 +9,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from ml.retrieval import DinoV2SaladRetriever, MegaLocRetriever
+from ml.retrieval import (
+    DinoV2SaladRetriever,
+    MegaLocRetriever,
+    SageVitBRetriever,
+    SelaVPRPlusPlusBaseRetriever,
+    SelaVPRPlusPlusRerankRetriever,
+)
 from ml.retrieval.testing import DeterministicFixtureRetriever
 
 
@@ -103,6 +109,9 @@ assert retriever.is_loaded is False
 def test_production_adapters_point_to_pinned_official_sources() -> None:
     mega = MegaLocRetriever(device="cpu")
     salad = DinoV2SaladRetriever(device="cpu")
+    sage = SageVitBRetriever(device="cpu")
+    sela = SelaVPRPlusPlusBaseRetriever(device="cpu")
+    sela_rerank = SelaVPRPlusPlusRerankRetriever(device="cpu")
     assert mega.repository == "gmberton/MegaLoc"
     assert mega.entrypoint == "get_trained_model"
     assert len(mega.revision) == 40
@@ -116,7 +125,33 @@ def test_production_adapters_point_to_pinned_official_sources() -> None:
     assert len(salad.checkpoint_sha256) == 64
     assert salad.metadata.extra["nested_revision"] == salad.dinov2_revision
     assert "v1.0.0/dino_salad.ckpt" in salad.checkpoint
-    assert mega.descriptor_dim == salad.descriptor_dim == 8448
+    assert sage.repository == "chenshunpeng/SAGE"
+    assert sage.entrypoint == "sage_vitb"
+    assert len(sage.revision) == 40
+    assert sage.checkpoint.startswith("huggingface:shunpeng/SAGE@")
+    assert len(sage.checkpoint_revision) == 40
+    assert len(sage.checkpoint_sha256) == 64
+    assert sage.metadata.extra["variant"] == "ViT-B without cross-image encoder"
+    assert mega.descriptor_dim == salad.descriptor_dim == sage.descriptor_dim == 8448
+    assert sela.repository == sela_rerank.repository == "Lu-Feng/SelaVPRplusplus"
+    assert sela.revision == sela_rerank.revision == "56bd921cbd3d53e9c5f91d0aafff147f95fb362a"
+    assert sela.descriptor_dim == 2048
+    assert sela_rerank.descriptor_dim == 2560
+    assert sela_rerank.metadata.extra["binary_descriptor_dim"] == 512
+    assert len(sela.checkpoint_sha256) == len(sela_rerank.checkpoint_sha256) == 64
+
+
+def test_selavprplusplus_rerank_branch_contract() -> None:
+    binary = np.zeros((2, 512), dtype=np.float32)
+    floating = np.zeros((2, 2048), dtype=np.float32)
+    binary[0, 0] = binary[1, 1] = 1.0
+    floating[0, 0] = floating[1, 1] = 1.0
+    storage = np.concatenate((binary, floating), axis=1) / np.sqrt(2.0)
+    split_binary, split_floating = SelaVPRPlusPlusRerankRetriever.split_descriptor(storage)
+    np.testing.assert_allclose(split_binary, binary)
+    np.testing.assert_allclose(split_floating, floating)
+    with pytest.raises(ValueError, match="dimension mismatch"):
+        SelaVPRPlusPlusRerankRetriever.split_descriptor(np.ones((1, 100)))
 
 
 def test_salad_rewrites_mutable_nested_dinov2_hub_dependency() -> None:

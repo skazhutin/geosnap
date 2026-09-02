@@ -482,6 +482,7 @@ def create_localization_service() -> LocalizationService:
         )
     )
     frozen_localization = {} if frozen is None else frozen.payload["localization"]
+    use_product_policy = frozen is not None and frozen.confidence_model_path is not None
     cluster_radius_m = float(
         frozen_value("LOCALIZATION_CLUSTER_RADIUS_M", frozen_localization.get("cluster_radius_m"), "100")
     )
@@ -492,48 +493,58 @@ def create_localization_service() -> LocalizationService:
             "150",
         )
     )
-    out_of_coverage_similarity = float(
-        frozen_value(
-            "OOC_SIMILARITY_THRESHOLD",
-            frozen_localization.get("out_of_coverage_similarity"),
-            "0.15",
+    if use_product_policy:
+        safety = dict(frozen_localization.get("safety_gates", {}))
+        for env_name, key in (
+            ("OOC_SIMILARITY_THRESHOLD", "out_of_coverage_similarity"),
+            ("MINIMUM_CLUSTER_MASS", "minimum_cluster_mass"),
+            ("MINIMUM_CLUSTER_MASS_MARGIN", "minimum_cluster_mass_margin"),
+            ("MINIMUM_CLUSTER_CANDIDATES", "minimum_cluster_candidates"),
+        ):
+            frozen_value(env_name, safety.get(key), safety.get(key))
+    else:
+        out_of_coverage_similarity = float(
+            frozen_value(
+                "OOC_SIMILARITY_THRESHOLD",
+                frozen_localization.get("out_of_coverage_similarity"),
+                "0.15",
+            )
         )
-    )
-    confident_similarity = float(
-        frozen_value(
-            "CONFIDENT_SIMILARITY_THRESHOLD",
-            frozen_localization.get("confident_similarity"),
-            "0.65",
+        confident_similarity = float(
+            frozen_value(
+                "CONFIDENT_SIMILARITY_THRESHOLD",
+                frozen_localization.get("confident_similarity"),
+                "0.65",
+            )
         )
-    )
-    geographic_margin = float(
-        frozen_value(
-            "GOOD_GEOGRAPHIC_MARGIN",
-            frozen_localization.get("good_geographic_margin"),
-            "0.08",
+        geographic_margin = float(
+            frozen_value(
+                "GOOD_GEOGRAPHIC_MARGIN",
+                frozen_localization.get("good_geographic_margin"),
+                "0.08",
+            )
         )
-    )
-    minimum_cluster_mass = float(
-        frozen_value(
-            "MINIMUM_CLUSTER_MASS",
-            frozen_localization.get("minimum_cluster_mass"),
-            "0.45",
+        minimum_cluster_mass = float(
+            frozen_value(
+                "MINIMUM_CLUSTER_MASS",
+                frozen_localization.get("minimum_cluster_mass"),
+                "0.45",
+            )
         )
-    )
-    minimum_cluster_mass_margin = float(
-        frozen_value(
-            "MINIMUM_CLUSTER_MASS_MARGIN",
-            frozen_localization.get("minimum_cluster_mass_margin"),
-            "0.10",
+        minimum_cluster_mass_margin = float(
+            frozen_value(
+                "MINIMUM_CLUSTER_MASS_MARGIN",
+                frozen_localization.get("minimum_cluster_mass_margin"),
+                "0.10",
+            )
         )
-    )
-    minimum_cluster_candidates = int(
-        frozen_value(
-            "MINIMUM_CLUSTER_CANDIDATES",
-            frozen_localization.get("minimum_cluster_candidates"),
-            "2",
+        minimum_cluster_candidates = int(
+            frozen_value(
+                "MINIMUM_CLUSTER_CANDIDATES",
+                frozen_localization.get("minimum_cluster_candidates"),
+                "2",
+            )
         )
-    )
     score_temperature = float(
         frozen_value(
             "LOCALIZATION_SCORE_TEMPERATURE",
@@ -589,22 +600,34 @@ def create_localization_service() -> LocalizationService:
         batch_size=batch_size,
         cache_dir=model_cache,
     )
-    localizer = SpatialLocalizer(
-        LocalizerConfig(
-            cluster_radius_m=cluster_radius_m,
-            max_cluster_diameter_m=max_cluster_diameter_m,
-            estimator=estimator,
-            confidence_threshold=confidence_threshold,
-            out_of_coverage_similarity=out_of_coverage_similarity,
-            confident_similarity=confident_similarity,
-            good_geographic_margin=geographic_margin,
-            minimum_cluster_mass=minimum_cluster_mass,
-            minimum_cluster_mass_margin=minimum_cluster_mass_margin,
-            minimum_cluster_candidates=minimum_cluster_candidates,
-            good_hypothesis_separation_m=hypothesis_separation_m,
-            score_temperature=score_temperature,
+    if use_product_policy:
+        from .confidence_model import ConfidenceModel
+        from .product_runtime import ProductSpatialLocalizer, product_policy_from_frozen
+
+        confidence_model = ConfidenceModel.from_dict(
+            json.loads(frozen.confidence_model_path.read_text(encoding="utf-8"))
         )
-    )
+        localizer = ProductSpatialLocalizer(
+            product_policy_from_frozen(frozen_localization),
+            confidence_model,
+        )
+    else:
+        localizer = SpatialLocalizer(
+            LocalizerConfig(
+                cluster_radius_m=cluster_radius_m,
+                max_cluster_diameter_m=max_cluster_diameter_m,
+                estimator=estimator,
+                confidence_threshold=confidence_threshold,
+                out_of_coverage_similarity=out_of_coverage_similarity,
+                confident_similarity=confident_similarity,
+                good_geographic_margin=geographic_margin,
+                minimum_cluster_mass=minimum_cluster_mass,
+                minimum_cluster_mass_margin=minimum_cluster_mass_margin,
+                minimum_cluster_candidates=minimum_cluster_candidates,
+                good_hypothesis_separation_m=hypothesis_separation_m,
+                score_temperature=score_temperature,
+            )
+        )
     return LocalizationService(
         retriever,
         index_dir,

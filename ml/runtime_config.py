@@ -47,9 +47,10 @@ class FrozenRuntimeConfig:
             Path(str(loaded["index"]["directory"]))
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeConfigError("runtime config is missing a required field") from exc
-        if top_k < 10 or not 0.0 <= threshold <= 1.0 or not retriever or not estimator:
+        if top_k < 5 or not 0.0 <= threshold <= 1.0 or not retriever or not estimator:
             raise RuntimeConfigError("runtime config values are outside their supported ranges")
         instance = cls(resolved, loaded, sha256_file(resolved))
+        instance.verify_confidence_model()
         if verify_index:
             instance.verify_index()
         return instance
@@ -80,6 +81,14 @@ class FrozenRuntimeConfig:
         return path if path.is_absolute() else (self.path.parent.parent / path).resolve()
 
     @property
+    def confidence_model_path(self) -> Path | None:
+        value = self.payload.get("confidence", {}).get("artifact")
+        if not value:
+            return None
+        path = Path(str(value))
+        return path if path.is_absolute() else (self.path.parent.parent / path).resolve()
+
+    @property
     def city_id(self) -> str:
         return str(self.payload["index"]["city_id"])
 
@@ -94,6 +103,16 @@ class FrozenRuntimeConfig:
         expected = str(self.payload["index"].get("index_metadata_sha256", ""))
         if not expected or sha256_file(metadata) != expected:
             raise RuntimeConfigError("frozen index metadata SHA-256 does not match")
+
+    def verify_confidence_model(self) -> None:
+        path = self.confidence_model_path
+        if path is None:
+            return
+        if not path.is_file():
+            raise RuntimeConfigError(f"frozen confidence model is missing: {path}")
+        expected = str(self.payload.get("confidence", {}).get("artifact_sha256", ""))
+        if not expected or sha256_file(path) != expected:
+            raise RuntimeConfigError("frozen confidence model SHA-256 does not match")
 
     def assert_benchmark_contract(
         self,

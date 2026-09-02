@@ -1648,7 +1648,11 @@ def run_moscow_benchmark(
             ),
             "exact_faiss_vector_storage_bytes": gallery_build.descriptor_storage_bytes,
             "peak_process_rss_bytes": _peak_process_rss_bytes(),
-            "exact_search_backend": "faiss.IndexFlatIP (L2-normalized descriptors, isolated process)",
+            "exact_search_backend": getattr(
+                exact_search,
+                "backend_name",
+                "faiss.IndexFlatIP (L2-normalized descriptors, isolated process)",
+            ),
             "environment": {
                 "platform": platform.platform(),
                 "machine": platform.machine(),
@@ -1705,7 +1709,17 @@ def main() -> None:
     parser.add_argument("--gallery-manifest", type=Path, required=True)
     parser.add_argument("--query-manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--model", choices=("megaloc", "dinov2-salad"), required=True)
+    parser.add_argument(
+        "--model",
+        choices=(
+            "megaloc",
+            "dinov2-salad",
+            "sage-vitb",
+            "selavprplusplus-base",
+            "selavprplusplus-base-rerank",
+        ),
+        required=True,
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -1745,6 +1759,14 @@ def main() -> None:
         batch_size=args.batch_size,
         cache_dir=args.cache_dir,
     )
+    search_factory: Callable[[], ExactSearch]
+    if args.model == "selavprplusplus-base-rerank":
+        from ml.evaluation.selavpr_two_stage import SelaVPRPlusPlusTwoStageSearch
+
+        def search_factory() -> ExactSearch:
+            return SelaVPRPlusPlusTwoStageSearch(candidate_pool=100)
+    else:
+        search_factory = _real_moscow_exact_search
     try:
         payload, json_path, markdown_path = run_moscow_benchmark(
             gallery_manifest_path=args.gallery_manifest,
@@ -1760,6 +1782,7 @@ def main() -> None:
             gallery_embedding_dir=args.gallery_embedding_dir,
             runtime_config_path=args.runtime_config,
             query_aggregation=args.query_aggregation,
+            search_factory=search_factory,
         )
     finally:
         retriever.close()

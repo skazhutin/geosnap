@@ -1,10 +1,13 @@
 # Отчёт о реальных данных Москвы
 
-Актуально на 2026-09-01. Current namespace — `moscow_real_v2`. Полный Phase 2
+Актуально на 2026-09-03. Этот документ сохраняет acquisition/data evidence для
+исторического `moscow_real_v2`; текущий frozen evaluation namespace —
+`moscow_real_v3`. Полный Phase 2
 experiment record находится в
 [phase2_quality_improvement.md](phase2_quality_improvement.md), model/test
-summary — в [evaluation_report.md](evaluation_report.md). V1 сохранён как
-immutable historical bundle.
+summary — в [evaluation_report.md](evaluation_report.md), а v3 recovery — в
+[phase2_5_product_recovery.md](phase2_5_product_recovery.md). V1/V2 сохранены
+как immutable historical bundles.
 
 ## Production data contract
 
@@ -100,10 +103,10 @@ Fingerprints:
 - calibration: `4e92d5e229dae00ea9a7117eb3765f23247d6c77ef82a837f24c9efe6923b5a4`;
 - test: `b96cb9bb39908d357c4cf24a0a366c6e1dc1f8f953323d5ce3185cc0a8a94bdf`.
 
-## Current frozen data/model artifact
+## Historical v2 frozen data/model artifact
 
 Calibration did not find a deployable retrieval candidate that cleared the
-material plus major-stratum gate. Current artifact therefore uses MegaLoc on
+material plus major-stratum gate. The v2 artifact therefore uses MegaLoc on
 the improved v2 gallery, single query aggregation, exact `IndexFlatIP`, K=50,
 weighted medoid and verification off. Prospective Wilson calibration was
 infeasible, so `configs/moscow_real_v2_frozen.json` applies fail-closed threshold

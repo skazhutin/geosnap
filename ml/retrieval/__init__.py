@@ -16,12 +16,17 @@ from .base import (
 from .dinov2_salad import DinoV2SaladRetriever
 from .megaloc import MegaLocRetriever
 from .registry import create_retriever
+from .sage import SageVitBRetriever
+from .selavprplusplus import SelaVPRPlusPlusBaseRetriever, SelaVPRPlusPlusRerankRetriever
 
 __all__ = [
     "BaseRetriever",
     "DescriptorError",
     "DinoV2SaladRetriever",
     "MegaLocRetriever",
+    "SageVitBRetriever",
+    "SelaVPRPlusPlusBaseRetriever",
+    "SelaVPRPlusPlusRerankRetriever",
     "ModelDependencyError",
     "ModelLoadError",
     "RetrieverError",

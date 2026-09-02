@@ -718,12 +718,41 @@ def build_index_from_embedding_artifacts(
     *,
     index_id: str = "default",
     city_id: str | None = None,
+    include_local_density_100m: bool = False,
 ) -> FaissExactIndex:
     descriptors, ids, references, embedding_metadata = load_embedding_artifacts(embedding_dir)
     metadata_by_id = {
         row["reference_id"]: dict(row.get("metadata", {})) | {"image_path": row.get("image_path")} for row in references
     }
     reference_metadata = [metadata_by_id[reference_id] for reference_id in ids]
+    if include_local_density_100m:
+        try:
+            from sklearn.neighbors import BallTree
+        except ImportError as exc:  # pragma: no cover - offline build dependency
+            raise FaissIndexError(
+                "scikit-learn is required to enrich an index with local density"
+            ) from exc
+        try:
+            coordinates = np.radians(
+                np.asarray(
+                    [
+                        [float(metadata["lat"]), float(metadata["lon"])]
+                        for metadata in reference_metadata
+                    ],
+                    dtype=np.float64,
+                )
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise FaissIndexError("local density enrichment requires finite lat/lon") from exc
+        if not np.isfinite(coordinates).all():
+            raise FaissIndexError("local density enrichment requires finite lat/lon")
+        densities = BallTree(coordinates, metric="haversine").query_radius(
+            coordinates,
+            r=100.0 / 6_371_008.8,
+            count_only=True,
+        )
+        for metadata, density in zip(reference_metadata, densities, strict=True):
+            metadata["local_gallery_density_100m"] = int(density)
     index = FaissExactIndex.build(
         descriptors,
         ids,
@@ -731,7 +760,10 @@ def build_index_from_embedding_artifacts(
         retriever_metadata=embedding_metadata.get("retriever", {}),
         index_id=index_id,
         city_id=city_id,
-        extra_metadata={"embedding_input_signature": embedding_metadata.get("input_signature")},
+        extra_metadata={
+            "embedding_input_signature": embedding_metadata.get("input_signature"),
+            "local_gallery_density_100m": bool(include_local_density_100m),
+        },
     )
     index.save(output_dir)
     return index
@@ -743,12 +775,14 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--index-id", default="default")
     parser.add_argument("--city-id")
+    parser.add_argument("--include-local-density-100m", action="store_true")
     args = parser.parse_args()
     index = build_index_from_embedding_artifacts(
         args.embeddings,
         args.output_dir,
         index_id=args.index_id,
         city_id=args.city_id,
+        include_local_density_100m=args.include_local_density_100m,
     )
     print(json.dumps(index.build_metadata, ensure_ascii=False, indent=2))
 

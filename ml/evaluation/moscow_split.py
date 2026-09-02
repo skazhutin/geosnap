@@ -78,6 +78,30 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _query_sequence_exclusions(paths: Sequence[Path]) -> tuple[set[SequenceKey], list[dict[str, Any]]]:
+    """Load historical query manifests without removing their rows from the gallery pool."""
+
+    sequences: set[SequenceKey] = set()
+    evidence: list[dict[str, Any]] = []
+    for path in paths:
+        frame = read_manifest(path, allow_empty=True)
+        current = {
+            (_text(row.source).lower(), _text(row.sequence_id))
+            for row in frame.itertuples()
+            if _text(row.source) and _text(row.sequence_id)
+        }
+        sequences.update(current)
+        evidence.append(
+            {
+                "name": path.name,
+                "rows": len(frame),
+                "provider_sequences": len(current),
+                "sha256": _sha256_file(path),
+            }
+        )
+    return sequences, sorted(evidence, key=lambda item: (str(item["name"]), str(item["sha256"])))
+
+
 def _stable_score(seed: int, *parts: object) -> str:
     payload = "\0".join([str(seed), *(str(part) for part in parts)]).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -1425,6 +1449,7 @@ def run(
     holdout_candidate_multiplier: int = DEFAULT_HOLDOUT_CANDIDATE_MULTIPLIER,
     replace_existing: bool = False,
     representative_balance: bool = False,
+    exclude_query_manifests: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """Create gallery/calibration/test Parquets and a fail-closed audit."""
 
@@ -1461,6 +1486,24 @@ def run(
         frame,
         usable_indices,
         positive_distance_m=positive_distance_m,
+    )
+    excluded_query_sequences, exclusion_evidence = _query_sequence_exclusions(
+        tuple(Path(path) for path in exclude_query_manifests)
+    )
+    eligible_before_historical_exclusion = len(eligible_indices)
+    eligible_indices = {
+        index
+        for index in eligible_indices
+        if _sequence_key(frame, index) not in excluded_query_sequences
+    }
+    eligibility["eligible_before_historical_query_sequence_exclusion"] = (
+        eligible_before_historical_exclusion
+    )
+    eligibility["historical_query_provider_sequences_excluded"] = len(
+        excluded_query_sequences
+    )
+    eligibility["eligible_removed_by_historical_query_sequence_exclusion"] = (
+        eligible_before_historical_exclusion - len(eligible_indices)
     )
     if not eligible_indices:
         raise MoscowSplitError("no query candidates exist in multi-sequence neighborhoods with gallery positives")
@@ -1640,6 +1683,10 @@ def run(
         "minimum_gallery_fraction": minimum_gallery_fraction,
         "holdout_candidate_multiplier": holdout_candidate_multiplier,
         "representative_balance": representative_balance,
+        "excluded_query_manifests": exclusion_evidence,
+        "excluded_query_sequence_fingerprint": hashlib.sha256(
+            "\n".join(sorted(_sequence_label(key) for key in excluded_query_sequences)).encode("utf-8")
+        ).hexdigest(),
     }
     bundle_fingerprint = _bundle_fingerprint(
         input_manifest_sha256=input_manifest_sha256,
@@ -1658,6 +1705,7 @@ def run(
         "parameters": parameters,
         "eligibility": {
             **eligibility,
+            "historical_query_exclusion_manifests": exclusion_evidence,
             "eligible_query_frames_before_holdout": len(eligible_indices),
             "eligible_sequences_before_holdout": len({_sequence_key(frame, index) for index in eligible_indices}),
             "initial_holdout_selection": initial_holdout_selection,
@@ -1845,6 +1893,13 @@ def main() -> None:
         action="store_true",
         help="balance calibration/test provider, H3-area, and resolution distributions for v2",
     )
+    parser.add_argument(
+        "--exclude-query-manifest",
+        action="append",
+        default=[],
+        type=Path,
+        help="historical query manifest whose provider-scoped sequences cannot become new queries",
+    )
     args = parser.parse_args()
     run(
         input_manifest=args.manifest,
@@ -1865,6 +1920,7 @@ def main() -> None:
         holdout_candidate_multiplier=args.holdout_candidate_multiplier,
         replace_existing=args.replace_existing,
         representative_balance=args.representative_balance,
+        exclude_query_manifests=args.exclude_query_manifest,
     )
 
 

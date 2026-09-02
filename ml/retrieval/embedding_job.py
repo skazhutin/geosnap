@@ -19,7 +19,6 @@ from typing import Any
 import numpy as np
 
 from .base import BaseRetriever
-from .image_io import load_rgb_image
 from .registry import create_retriever
 
 logger = logging.getLogger(__name__)
@@ -197,11 +196,21 @@ def _input_signature(
                 _json_safe(record.metadata), sort_keys=True, separators=(",", ":")
             ).encode("utf-8")
         )
-        try:
+        declared_sha256 = str(record.metadata.get("file_sha256", "")).strip().lower()
+        if len(declared_sha256) == 64 and all(
+            character in "0123456789abcdef" for character in declared_sha256
+        ):
+            # Canonical real-data manifests already bind and leakage-audit this
+            # content hash. Reuse the exact same identity bytes rather than
+            # rereading a multi-gigabyte gallery before every resumable job.
             digest.update(b"\0sha256:")
-            digest.update(_sha256_file(record.image_path).encode("ascii"))
-        except OSError:
-            digest.update(b"\0missing")
+            digest.update(declared_sha256.encode("ascii"))
+        else:
+            try:
+                digest.update(b"\0sha256:")
+                digest.update(_sha256_file(record.image_path).encode("ascii"))
+            except OSError:
+                digest.update(b"\0missing")
         digest.update(b"\n")
     return digest.hexdigest()
 
@@ -335,40 +344,26 @@ class EmbeddingJob:
         self,
         batch: Sequence[ReferenceImage],
     ) -> tuple[list[str], np.ndarray, list[EmbeddingFailure]]:
-        valid_records: list[ReferenceImage] = []
-        decoded_images: list[Any] = []
         failures: list[EmbeddingFailure] = []
-        for record in batch:
-            try:
-                decoded_images.append(load_rgb_image(record.image_path))
-                valid_records.append(record)
-            except Exception as exc:  # one corrupt/missing image must not stop the gallery
-                failures.append(
-                    EmbeddingFailure(
-                        reference_id=record.reference_id,
-                        image_path=str(record.image_path),
-                        error_type=type(exc).__name__,
-                        message=str(exc)[:1000],
-                    )
-                )
-
-        if not valid_records:
-            return [], np.empty((0, self.retriever.descriptor_dim), dtype=np.float32), failures
-
         try:
-            matrix = self.retriever.embed_batch(decoded_images)
+            # Pass paths through to the retriever so each image is decoded and
+            # detached exactly once. The former eager predecode plus the
+            # retriever's own coercion duplicated large RGB buffers and made
+            # real gallery extraction needlessly slow. A bad batch still falls
+            # back to the same per-image isolation below.
+            matrix = self.retriever.embed_batch([record.image_path for record in batch])
             matrix = self.retriever.validate_descriptors(
-                matrix, expected_rows=len(valid_records), normalize=True
+                matrix, expected_rows=len(batch), normalize=True
             )
-            return [record.reference_id for record in valid_records], matrix, failures
+            return [record.reference_id for record in batch], matrix, failures
         except Exception as batch_exc:
             logger.warning("batch embedding failed; isolating images one by one: %s", batch_exc)
 
         ids: list[str] = []
         rows: list[np.ndarray] = []
-        for record, image in zip(valid_records, decoded_images, strict=True):
+        for record in batch:
             try:
-                descriptor = self.retriever.embed_query(image)
+                descriptor = self.retriever.embed_query(record.image_path)
                 ids.append(record.reference_id)
                 rows.append(descriptor)
             except Exception as exc:
@@ -813,9 +808,24 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--image-root", type=Path, default=Path("."))
-    parser.add_argument("--retriever", choices=["megaloc", "dinov2-salad"], default="megaloc")
+    parser.add_argument(
+        "--retriever",
+        choices=[
+            "megaloc",
+            "dinov2-salad",
+            "sage-vitb",
+            "selavprplusplus-base",
+            "selavprplusplus-base-rerank",
+        ],
+        default="megaloc",
+    )
     parser.add_argument("--device", choices=["auto", "cuda", "mps", "cpu"], default="auto")
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument(
+        "--checkpoint-batch-size",
+        type=int,
+        help="rows per resumability chunk; defaults to model batch size",
+    )
     parser.add_argument("--model-cache", type=Path)
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument(
@@ -836,7 +846,7 @@ def main() -> None:
     artifacts = EmbeddingJob(
         retriever,
         args.output_dir,
-        batch_size=args.batch_size,
+        batch_size=args.checkpoint_batch_size or args.batch_size,
         reuse_from=args.reuse_from,
     ).run(records, resume=not args.no_resume)
     print(json.dumps(asdict(artifacts), default=str, indent=2))

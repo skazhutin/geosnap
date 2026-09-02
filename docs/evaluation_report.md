@@ -1,12 +1,44 @@
-# Real Moscow evaluation — current v2 candidate
+# Real Moscow evaluation — current v3 candidate
 
-Актуально на 2026-09-01. Полная evidence chain, acquisition и per-stratum
-объяснение находятся в [phase2_quality_improvement.md](phase2_quality_improvement.md).
-Этот документ — компактный current-candidate summary. `moscow_real_v1`
-сохраняется ниже как исторический результат и не использовался для v2 tuning.
+Актуально на 2026-09-03. Полная Part 2.5 evidence chain, включая K grid,
+aggregation/confidence experiments, SALAD/SAGE/SelaVPR++/CricaVPR audit и exact
+stratum denominators, находится в
+[phase2_5_product_recovery.md](phase2_5_product_recovery.md). V1 и V2 ниже
+сохраняются как immutable history и не использовались для v3 tuning.
 
-> V2 не подтверждает полезную city-wide локализацию. Frozen runtime намеренно
-> fail-closed: prospective Wilson objective на calibration оказался infeasible.
+## V3 frozen candidate
+
+Новый split содержит 20 031 gallery references, 602 development, 603
+calibration и 1 195 once-opened final-test queries. Между всеми query splits и
+gallery подтверждены sequence/source/hash/pHash boundaries; development,
+calibration и test разделены geographic embargo >=250 м.
+
+SAGE ViT-B без cross-image encoder выбран на development/calibration: K=30,
+density-aware geographic voting, weighted medoid, standardized logistic
+confidence и threshold `0.9349250249145314`. Frozen config SHA-256:
+`ddcfa0a66dbf0d4bbf31a292be38b07ceb6e93b60a983aaa46cd23679cafd0e2`.
+
+| Final-test metric | Unchanged MegaLoc v2 policy | Frozen SAGE v3 |
+|---|---:|---:|
+| <=100 м R@10 / R@20 | 25,36 / 28,79% | 40,42 / 43,18% |
+| Median positive rank | 391 | 61 |
+| Raw all-query <=100 м | 13,05% | 26,61% |
+| Answer rate | 0/1 195 (0%) | 92/1 195 (7,70%) |
+| Conditional <=25/50/100 м | undefined | 67,39 / 82,61 / 94,57% |
+| Wilson 95% conditional <=100 м | undefined | 87,90–97,66% |
+| Accepted >100 м / >500 м | 0 / 0 | 5 / 3 |
+| Accepted median / p90 / p95 | undefined | 18,21 / 68,09 / 90,36 м |
+| End-to-end p50 / p90 / p95 | 141,31 / 171,47 / 191,86 мс | 138,74 / 169,18 / 188,48 мс |
+
+V3 восстанавливает ненулевой полезный режим, но preferred target не достигнут:
+answer rate меньше 10%, а 3/92 accepted результатов (3,26%) имеют ошибку >500
+м. Конфигурация не менялась после test. Следующая итерация требует нового
+sealed namespace.
+
+## Historical v2 candidate
+
+V2 не подтверждал полезную city-wide локализацию. Frozen runtime был намеренно
+fail-closed: prospective Wilson objective на calibration оказался infeasible.
 
 ## V2 protocol and leakage boundary
 
