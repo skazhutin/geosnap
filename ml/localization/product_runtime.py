@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .confidence_model import ConfidenceModel
+from .confidence_model import ConfidenceModel, MultinomialRiskModel
 from .models import LocalizationResult, LocalizationStatus, LocationHypothesis
 from .product_policy import (
     AggregationStrategy,
@@ -19,6 +19,7 @@ from .product_policy import (
 class ProductRuntimePolicy:
     aggregation: AggregationStrategy
     confidence_threshold: float
+    catastrophic_risk_threshold: float | None = None
     cluster_radius_m: float = 100.0
     max_cluster_diameter_m: float = 150.0
     score_temperature: float = 0.08
@@ -31,6 +32,11 @@ class ProductRuntimePolicy:
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence_threshold <= 1.0:
             raise ValueError("confidence_threshold must be in [0, 1]")
+        if (
+            self.catastrophic_risk_threshold is not None
+            and not 0.0 <= self.catastrophic_risk_threshold <= 1.0
+        ):
+            raise ValueError("catastrophic_risk_threshold must be in [0, 1]")
         if self.out_of_coverage_similarity is not None and not -1.0 <= self.out_of_coverage_similarity <= 1.0:
             raise ValueError("out_of_coverage_similarity must be in [-1, 1]")
         if self.minimum_cluster_mass is not None and not 0.0 <= self.minimum_cluster_mass <= 1.0:
@@ -54,9 +60,15 @@ class ProductRuntimePolicy:
 class ProductSpatialLocalizer:
     """Apply the frozen aggregation, soft evidence model, and audited safety gates."""
 
-    def __init__(self, policy: ProductRuntimePolicy, confidence_model: ConfidenceModel) -> None:
+    def __init__(
+        self,
+        policy: ProductRuntimePolicy,
+        confidence_model: ConfidenceModel | MultinomialRiskModel,
+        catastrophic_risk_model: ConfidenceModel | None = None,
+    ) -> None:
         self.policy = policy
         self.confidence_model = confidence_model
+        self.catastrophic_risk_model = catastrophic_risk_model
 
     def localize(
         self,
@@ -84,7 +96,17 @@ class ProductSpatialLocalizer:
             config=self.policy.aggregation_config,
             query_quality=1.0 if query_quality is None else query_quality,
         )
-        confidence = self.confidence_model.predict_proba(localized.features)
+        prediction = self.confidence_model.predict_proba(localized.features)
+        if isinstance(prediction, dict):
+            confidence = float(prediction[0])
+            catastrophic_risk = float(prediction[2])
+        else:
+            confidence = float(prediction)
+            catastrophic_risk = (
+                None
+                if self.catastrophic_risk_model is None
+                else float(self.catastrophic_risk_model.predict_proba(localized.features))
+            )
         winner = localized.modes[0]
         reasons: list[str] = []
         top_similarity = float(localized.features["top1_similarity"])
@@ -125,6 +147,12 @@ class ProductSpatialLocalizer:
             reasons.append("winning_geographic_mode_has_insufficient_support")
         if confidence < self.policy.confidence_threshold:
             reasons.append("confidence_below_threshold")
+        if (
+            self.policy.catastrophic_risk_threshold is not None
+            and catastrophic_risk is not None
+            and catastrophic_risk > self.policy.catastrophic_risk_threshold
+        ):
+            reasons.append("catastrophic_risk_above_threshold")
         status = LocalizationStatus.OK if not reasons else LocalizationStatus.LOW_CONFIDENCE
         hypotheses = tuple(
             LocationHypothesis(
@@ -158,6 +186,7 @@ class ProductSpatialLocalizer:
             | {
                 "confidence_method": self.confidence_model.method,
                 "confidence_features": dict(localized.features),
+                "catastrophic_risk_score": catastrophic_risk,
             },
             reasons=tuple(reasons),
         )
@@ -168,6 +197,11 @@ def product_policy_from_frozen(localization: Mapping[str, Any]) -> ProductRuntim
     return ProductRuntimePolicy(
         aggregation=AggregationStrategy(str(localization["aggregation"])),
         confidence_threshold=float(localization["confidence_threshold"]),
+        catastrophic_risk_threshold=(
+            float(localization["catastrophic_risk_threshold"])
+            if localization.get("catastrophic_risk_threshold") is not None
+            else None
+        ),
         cluster_radius_m=float(localization.get("cluster_radius_m", 100.0)),
         max_cluster_diameter_m=float(localization.get("max_cluster_diameter_m", 150.0)),
         score_temperature=float(localization.get("score_temperature", 0.08)),

@@ -37,8 +37,22 @@ class FrozenRuntimeConfig:
             raise RuntimeConfigError(f"cannot read frozen runtime config: {resolved}") from exc
         if not isinstance(loaded, dict) or loaded.get("schema_version") != 1:
             raise RuntimeConfigError("runtime config must be a schema-version-1 JSON object")
-        if loaded.get("status") != "frozen_before_final_test":
-            raise RuntimeConfigError("runtime config is not frozen_before_final_test")
+        if loaded.get("status") not in {
+            "frozen_before_final_test",
+            "production_selection_from_prefrozen_finalists",
+        }:
+            raise RuntimeConfigError("runtime config does not have a supported frozen status")
+        actual_sha256 = sha256_file(resolved)
+        if loaded.get("status") == "production_selection_from_prefrozen_finalists":
+            hash_path = resolved.with_suffix(".sha256")
+            try:
+                declared_sha256 = hash_path.read_text(encoding="ascii").strip().split()[0]
+            except (OSError, IndexError) as exc:
+                raise RuntimeConfigError(
+                    f"production runtime config hash file is missing or malformed: {hash_path}"
+                ) from exc
+            if declared_sha256 != actual_sha256:
+                raise RuntimeConfigError("production runtime config SHA-256 does not match")
         try:
             top_k = int(loaded["retrieval"]["top_k"])
             threshold = float(loaded["localization"]["confidence_threshold"])
@@ -49,9 +63,10 @@ class FrozenRuntimeConfig:
             raise RuntimeConfigError("runtime config is missing a required field") from exc
         if top_k < 5 or not 0.0 <= threshold <= 1.0 or not retriever or not estimator:
             raise RuntimeConfigError("runtime config values are outside their supported ranges")
-        instance = cls(resolved, loaded, sha256_file(resolved))
+        instance = cls(resolved, loaded, actual_sha256)
         instance.verify_confidence_model()
         if verify_index:
+            instance.verify_gallery()
             instance.verify_index()
         return instance
 
@@ -89,6 +104,14 @@ class FrozenRuntimeConfig:
         return path if path.is_absolute() else (self.path.parent.parent / path).resolve()
 
     @property
+    def gallery_manifest_path(self) -> Path:
+        value = self.payload.get("dataset", {}).get("gallery_manifest")
+        if not value:
+            raise RuntimeConfigError("frozen runtime config does not bind a gallery manifest")
+        path = Path(str(value))
+        return path if path.is_absolute() else (self.path.parent.parent / path).resolve()
+
+    @property
     def city_id(self) -> str:
         return str(self.payload["index"]["city_id"])
 
@@ -103,6 +126,14 @@ class FrozenRuntimeConfig:
         expected = str(self.payload["index"].get("index_metadata_sha256", ""))
         if not expected or sha256_file(metadata) != expected:
             raise RuntimeConfigError("frozen index metadata SHA-256 does not match")
+
+    def verify_gallery(self) -> None:
+        path = self.gallery_manifest_path
+        if not path.is_file():
+            raise RuntimeConfigError(f"frozen gallery manifest is missing: {path}")
+        expected = str(self.payload.get("dataset", {}).get("gallery_sha256", ""))
+        if not expected or sha256_file(path) != expected:
+            raise RuntimeConfigError("frozen gallery manifest SHA-256 does not match")
 
     def verify_confidence_model(self) -> None:
         path = self.confidence_model_path

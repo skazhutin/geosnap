@@ -3,11 +3,11 @@
 Актуально на 2026-09-03. Этот документ описывает реализованную архитектуру и
 границы данных, а не обещанную точность продукта. Production gallery имеет
 реальные Mapillary/KartaView references, но измеренное покрытие остаётся
-частичным. Current frozen v3 selection — SAGE ViT-B, exact `IndexFlatIP`, K=30,
-single query, density-aware geographic mode voting, weighted medoid,
-verification off и calibrated logistic threshold `0.9349250249145314`.
-Результаты и ограничения — в
-[phase2_5_product_recovery.md](phase2_5_product_recovery.md).
+частичным. Final production selection — SAGE ViT-B, exact `IndexFlatIP`, K=30,
+single query, density-aware geographic mode voting, sequence-deduplicated
+support, weighted medoid, verification off и Part 2.5 logistic score threshold
+`0.9349250249145314`. Результаты и ограничения — в
+[final_localization_core.md](final_localization_core.md).
 
 ## Граница production данных
 
@@ -18,8 +18,8 @@ verification off и calibrated logistic threshold `0.9349250249145314`.
 `33b5dbf852cb94e5292e7848974fba78641dd76339cad142e73b7419b5db4a8a`.
 
 V2 exact-AOI source manifest содержит 23 654 references (17 143 Mapillary,
-6 511 KartaView); frozen v3 leakage-resistant gallery/index содержит 20 031
-(14 972 / 5 059). В fixed 20×20 grid заняты 93 cells, только 30 dense-healthy,
+6 511 KartaView); frozen v4 leakage-resistant gallery/index содержит 20 487
+(14 099 / 6 388). В fixed 20×20 grid заняты 93 cells, только 30 dense-healthy,
 поэтому `city_id=moscow` обозначает область данных, а не гарантию локализации в
 любой точке города.
 
@@ -159,17 +159,19 @@ orientation и RGB conversion.
 - не смешивает разные `city_id`/`index_id` и не усредняет разные моды;
 - выбирает географическую моду с rank-, sequence-, provider-, density- и
   compactness-aware evidence, затем использует weighted medoid;
-- строит calibrated logistic confidence из 14 интерпретируемых retrieval и
+- строит logistic confidence score из 14 интерпретируемых retrieval и
   localization признаков без raw pixels;
 - возвращает `low_confidence` или `out_of_coverage`, когда evidence слабое;
 - оставляет `uncertainty_radius_m = null`, пока нет отдельной калибровки на
   leakage-resistant московском наборе.
 
-V3 confidence model fit только на development с group cross-validation;
-threshold выбран только на независимой calibration. Wilson interval остаётся
-reported evidence, а не kill-switch. Service загружает
-`configs/moscow_real_v3_frozen.json`, проверяет confidence/index hashes и
-отвергает конфликтующие model/K/localizer/index values.
+Production сохраняет exact Part 2.5 confidence model: fit только на v3
+development с group cross-validation, threshold выбран только на независимой
+v3 calibration. V4 проверил его на новой one-shot выборке. Wilson interval
+остаётся reported evidence, а не kill-switch. Service загружает
+`configs/moscow_production_frozen.json`, требует matching config sidecar,
+проверяет confidence/gallery/embedding/index/evaluation hashes и отвергает
+конфликтующие model/K/localizer/index values.
 `uncertainty_radius_m` остаётся `null`.
 
 API не возвращает абсолютные пути, download URL, токены или stack traces.
@@ -186,17 +188,20 @@ calibration product utility; CricaVPR отклонён из-за batch-dependent
 contract. Frozen selection — single-query SAGE ViT-B. Это не утверждение о
 превосходстве в других городах. Лицензии описаны в [licenses.md](licenses.md).
 
-Production retriever выбирается только следующим порядком:
+Финальный selection protocol прошёл следующим порядком:
 
-1. V3 публикует disjoint Mapillary/KartaView gallery/development/calibration/test
-   manifests с sequence, ID/source-ID, SHA-256, pHash и geographic embargo.
-2. Retriever, K, aggregation и confidence выбираются на development; final
-   confidence coefficients fit на development, threshold — на calibration.
-3. Model/checkpoint, K, aggregation, threshold, confidence artifact и index
-   hashes связываются в tracked frozen runtime config.
-4. V3 held-out test открыт ровно один раз после freeze; следующая tuning
-   iteration требует нового sealed namespace.
-5. Host smoke проверяет тот же frozen SAGE index/runtime contract.
+1. V4 исключает все historical v1/v2/v3 query sequences и публикует disjoint
+   Mapillary/KartaView gallery/development/calibration/test manifests с
+   sequence, ID/source-ID, SHA-256, pHash и >=250 м geographic embargo.
+2. K, aggregation, 45-feature candidate schema and confidence architecture
+   выбраны только на development с geographically grouped out-of-fold scores.
+3. Coefficients, K, aggregation и gate family frozen до calibration;
+   calibration только выбрала candidate numeric thresholds.
+4. Exact Part 2.5 baseline и candidate frozen до единственной v4 test
+   transaction. Candidate не обобщился; prescribed Case 2 сохранил exact Part
+   2.5 policy без post-test tuning.
+5. Model/checkpoint, gallery, confidence and index hashes связаны в единственном
+   production config; permanent smoke проверяет именно этот contract.
 
 Commons proxy и MSLS-derived benchmarks не могут выбрать production model:
 первый — hand-curated landmark-biased proxy, второй — внешний benchmark/training
@@ -204,13 +209,14 @@ corpus, а оба не являются Mapillary/KartaView Moscow deployment da
 
 ## Текущие границы готовности
 
-- V2 source содержит 23 654, frozen v3 gallery/index — 20 031 references;
-  подробности — в [Part 2.5 отчёте](phase2_5_product_recovery.md).
-- V3 split содержит 602 development, 603 calibration и 1 195 once-opened test
-  queries. Он не
-  означает full-city coverage: заняты 93/400 cells, dense-healthy только 30.
-- Frozen test answer rate равен 7,70% при 94,57% conditional <=100 м, но три
-  accepted errors >500 м не проходят preferred <=1% catastrophic target.
+- V2 source содержит 23 654, frozen v4 gallery/index — 20 487 references;
+  подробности — в [финальном отчёте](final_localization_core.md).
+- V4 split содержит 751 development, 750 calibration и 1 499 once-opened test
+  queries. Он не означает full-city coverage: заняты 93/400 cells,
+  dense-healthy только 30.
+- Frozen production test answer rate равен 8,47% при 96,85% conditional <=100
+  м и 8,21% all-query success, но 3/127 accepted errors >500 м не проходят
+  preferred <=1% catastrophic target.
 - OpenCV SIFT/LightGlue-compatible verification остаётся optional/default-off:
   real 100-query ablation дала нулевой all-query accuracy gain и median
   overhead +1 002 мс. Evidence и ограничения — в
@@ -219,5 +225,5 @@ corpus, а оба не являются Mapillary/KartaView Moscow deployment da
   threshold; оно остаётся `null`, пока не появится отдельная проверенная
   uncertainty calibration.
 - Docker Compose configuration проверена статически; stale 17,5 GB image не
-  содержит новую locked dependency и не был перестроен. Clean slim rebuild и
-  публичная browser QA остаются в Part 3.
+  был перестроен, а Docker daemon был недоступен. Clean functional build,
+  slimming и публичная browser QA остаются в Part 3.

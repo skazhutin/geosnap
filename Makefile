@@ -122,6 +122,7 @@ FINAL_MANIFEST := $(PROCESSED_DIR)/manifest_clean.parquet
 	calibrate-moscow-confidence benchmark-moscow-verification benchmark-moscow-test \
 	embed embed-moscow-gallery build-index index-moscow-gallery \
 	eval-data eval api frontend smoke smoke-moscow-v2 compose-config \
+	verify-moscow-production \
 	plan-moscow-v2-acquisition expand-mapillary-v2 select-kartaview-v2 split-moscow-v2 \
 	coverage-moscow-v2 embed-moscow-v2 benchmark-moscow-v2-calibration calibrate-moscow-v2-confidence
 
@@ -434,6 +435,10 @@ smoke:
 smoke-moscow-v2:
 	GEOSNAP_RUNTIME_CONFIG="configs/moscow_real_v2_frozen.json" RETRIEVAL_TOP_K=50 \
 		$(MAKE) smoke INDEX_DIR="data/indexes/moscow_real_v2/megaloc"
+
+verify-moscow-production:
+	PYTHONPATH=.:apps/backend GEOSNAP_MODEL_CACHE="$(GEOSNAP_MODEL_CACHE)" \
+		$(PYTHON) -m ml.production_verify --config configs/moscow_production_frozen.json
 
 compose-config:
 	docker compose --env-file /dev/null config --quiet

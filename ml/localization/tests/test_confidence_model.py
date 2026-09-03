@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from ml.localization.confidence_model import FEATURE_NAMES, ConfidenceModel, fit_confidence_model
+from ml.localization.confidence_model import (
+    FEATURE_NAMES,
+    ConfidenceModel,
+    MultinomialRiskModel,
+    fit_confidence_model,
+)
 
 
 def _rows(count: int = 100) -> list[dict[str, float]]:
@@ -67,3 +72,24 @@ def test_confidence_artifact_rejects_non_development_fit() -> None:
     }
     with pytest.raises(ValueError, match="development only"):
         ConfidenceModel.from_dict(row)
+
+
+def test_multinomial_risk_artifact_is_portable_and_schema_strict() -> None:
+    size = len(FEATURE_NAMES)
+    model = MultinomialRiskModel(
+        feature_names=FEATURE_NAMES,
+        means=(0.0,) * size,
+        scales=(1.0,) * size,
+        classes=(0, 1, 2),
+        coefficients=((0.0,) * size, (0.0,) * size, (0.0,) * size),
+        intercepts=(2.0, 0.0, -2.0),
+    )
+    restored = MultinomialRiskModel.from_dict(model.to_dict())
+    probabilities = restored.predict_proba(_rows(1)[0])
+
+    assert sum(probabilities.values()) == pytest.approx(1.0)
+    assert probabilities[0] > probabilities[1] > probabilities[2]
+    incomplete = _rows(1)[0]
+    incomplete.pop(FEATURE_NAMES[-1])
+    with pytest.raises(ValueError, match="missing confidence features"):
+        restored.predict_proba(incomplete)

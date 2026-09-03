@@ -1,4 +1,4 @@
-"""Promote a two-way Moscow query bundle into sealed v3 dev/calibration/test splits."""
+"""Promote a two-way Moscow query bundle into sealed dev/calibration/test splits."""
 
 from __future__ import annotations
 
@@ -30,7 +30,8 @@ from .moscow_split import (
 )
 
 SCHEMA_VERSION = 1
-ALGORITHM_VERSION = "v3-dev-cal-test-geographic-components-v1"
+ALGORITHM_VERSION = "dev-cal-test-geographic-components-v2"
+SUPPORTED_GENERATIONS = {"v3", "v4"}
 
 
 class MoscowV3SplitError(RuntimeError):
@@ -148,6 +149,58 @@ def _counts(frame: pd.DataFrame) -> dict[str, Any]:
         "evaluation_areas": int(frame["evaluation_area_h3"].nunique()),
         "geographic_components": int(frame["evaluation_geo_group_id"].nunique()),
         "resolution_buckets": dict(sorted(Counter(_resolution_bucket(row) for row in frame.itertuples()).items())),
+        "region_composition": {
+            str(key): int(value)
+            for key, value in frame["evaluation_area_h3"].value_counts().sort_index().items()
+        },
+    }
+
+
+def _density_bucket(value: int) -> str:
+    if value <= 1:
+        return "1"
+    if value <= 5:
+        return "2_5"
+    if value <= 20:
+        return "6_20"
+    return "gt20"
+
+
+def _query_density_counts(query: pd.DataFrame, gallery: pd.DataFrame) -> dict[str, Any]:
+    """Describe query coverage without exposing labels or test outcomes."""
+
+    if query.empty:
+        return {"within_m": {"25": {}, "50": {}, "100": {}}, "bucket_100m": {}}
+    try:
+        from sklearn.neighbors import BallTree
+    except ImportError as exc:  # pragma: no cover - declared offline dependency
+        raise MoscowV3SplitError("scikit-learn is required for split density audit") from exc
+    gallery_radians = gallery[["lat", "lon"]].to_numpy(dtype="float64")
+    query_radians = query[["lat", "lon"]].to_numpy(dtype="float64")
+    gallery_radians *= 3.141592653589793 / 180.0
+    query_radians *= 3.141592653589793 / 180.0
+    tree = BallTree(gallery_radians, metric="haversine")
+    counts: dict[str, list[int]] = {}
+    for radius in (25, 50, 100):
+        current = tree.query_radius(
+            query_radians,
+            r=float(radius) / 6_371_008.8,
+            count_only=True,
+        )
+        counts[str(radius)] = [int(value) for value in current]
+    return {
+        "within_m": {
+            radius: {
+                "minimum": min(values),
+                "median": float(pd.Series(values, dtype="float64").median()),
+                "p90": float(pd.Series(values, dtype="float64").quantile(0.9)),
+                "maximum": max(values),
+            }
+            for radius, values in counts.items()
+        },
+        "bucket_100m": dict(
+            sorted(Counter(_density_bucket(value) for value in counts["100"]).items())
+        ),
     }
 
 
@@ -184,8 +237,17 @@ def _verify_existing_bundle(output_dir: Path) -> dict[str, Any] | None:
     return audit
 
 
-def run(base_bundle: Path, output_dir: Path, *, seed: int = 20260902) -> dict[str, Any]:
-    """Create a deterministic, immutable v3 bundle from a leakage-audited base split."""
+def run(
+    base_bundle: Path,
+    output_dir: Path,
+    *,
+    seed: int = 20260902,
+    generation: str = "v3",
+) -> dict[str, Any]:
+    """Create a deterministic, immutable bundle from a leakage-audited base split."""
+
+    if generation not in SUPPORTED_GENERATIONS:
+        raise ValueError(f"generation must be one of {sorted(SUPPORTED_GENERATIONS)}")
 
     existing = _verify_existing_bundle(output_dir) if output_dir.is_dir() else None
     if existing is not None:
@@ -262,16 +324,20 @@ def run(base_bundle: Path, output_dir: Path, *, seed: int = 20260902) -> dict[st
         hashes = {name: _sha256_file(path) for name, path in paths.items()}
         test_seal = {
             "schema_version": 1,
+            "generation": generation,
             "status": "sealed_before_policy_tuning",
             "maximum_runs": 1,
             "test_manifest": "test_queries.parquet",
             "test_manifest_sha256": hashes["test"],
-            "allowed_after": "configs/moscow_real_v3_frozen.json is written and hash-verified",
+            "allowed_after": (
+                f"configs/moscow_real_{generation}_frozen.json is written and hash-verified"
+            ),
         }
         write_json(staging / "test_seal.json", test_seal)
         audit = {
             "schema_version": SCHEMA_VERSION,
             "algorithm_version": ALGORITHM_VERSION,
+            "generation": generation,
             "created_at": datetime.now(UTC).isoformat(),
             "seed": seed,
             "base_bundle": {
@@ -290,6 +356,11 @@ def run(base_bundle: Path, output_dir: Path, *, seed: int = 20260902) -> dict[st
                 ),
             },
             "sample_counts": {name: _counts(frame) for name, frame in frames.items()},
+            "local_gallery_density": {
+                name: _query_density_counts(frame, gallery)
+                for name, frame in frames.items()
+                if name != "gallery"
+            },
             "pairwise_leakage_audit": pairwise,
             "query_geographic_audit": geographic,
             "policy_assignment": {
@@ -332,8 +403,9 @@ def main() -> None:
     parser.add_argument("--base-bundle", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=20260902)
+    parser.add_argument("--generation", choices=sorted(SUPPORTED_GENERATIONS), default="v3")
     args = parser.parse_args()
-    audit = run(args.base_bundle, args.output_dir, seed=args.seed)
+    audit = run(args.base_bundle, args.output_dir, seed=args.seed, generation=args.generation)
     print(json.dumps(audit["sample_counts"], indent=2, sort_keys=True))
 
 

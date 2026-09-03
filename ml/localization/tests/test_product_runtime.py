@@ -75,3 +75,18 @@ def test_product_sequence_support_gate_uses_winning_mode() -> None:
 
     assert result.status is LocalizationStatus.LOW_CONFIDENCE
     assert "winning_geographic_mode_has_insufficient_support" in result.reasons
+
+
+def test_catastrophic_risk_veto_is_independent_of_correctness_score() -> None:
+    result = ProductSpatialLocalizer(
+        ProductRuntimePolicy(
+            aggregation=AggregationStrategy.SEQUENCE_DEDUPLICATED_VOTE,
+            confidence_threshold=0.80,
+            catastrophic_risk_threshold=0.10,
+        ),
+        _model(0.95),
+        catastrophic_risk_model=_model(0.20),
+    ).localize(_matches())
+
+    assert result.status is LocalizationStatus.LOW_CONFIDENCE
+    assert result.reasons == ("catastrophic_risk_above_threshold",)

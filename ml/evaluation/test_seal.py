@@ -1,4 +1,4 @@
-"""One-shot v3 final-test seal enforced before any test manifest is read."""
+"""One-shot final-test seal enforced before any test manifest is read."""
 
 from __future__ import annotations
 
@@ -12,7 +12,9 @@ from typing import Any
 
 
 class TestSealError(RuntimeError):
-    """The v3 test is still sealed, already opened, or inconsistent."""
+    """A final test is still sealed, already opened, or inconsistent."""
+
+    __test__ = False
 
 
 def sha256_file(path: Path) -> str:
@@ -25,6 +27,9 @@ def sha256_file(path: Path) -> str:
 
 @dataclass(frozen=True, slots=True)
 class TestOpening:
+    __test__ = False
+
+    generation: str
     bundle: Path
     frozen_config: Path
     frozen_sha256: str
@@ -50,9 +55,9 @@ def begin_test_opening(
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise TestSealError("cannot read test seal or frozen configuration") from exc
     if seal.get("status") != "sealed_before_policy_tuning" or seal.get("maximum_runs") != 1:
-        raise TestSealError("v3 test seal has an unsupported status or run allowance")
+        raise TestSealError("test seal has an unsupported status or run allowance")
     if frozen.get("status") != "frozen_before_final_test":
-        raise TestSealError("v3 runtime configuration is not frozen_before_final_test")
+        raise TestSealError("runtime configuration is not frozen_before_final_test")
     actual_frozen_hash = sha256_file(frozen_config)
     try:
         declared_frozen_hash = frozen_hash.read_text(encoding="ascii").strip().split()[0]
@@ -61,35 +66,42 @@ def begin_test_opening(
     if declared_frozen_hash != actual_frozen_hash:
         raise TestSealError("frozen configuration hash mismatch")
     test_manifest = bundle / str(seal["test_manifest"])
-    actual_test_hash = sha256_file(test_manifest)
     expected_test_hash = str(seal["test_manifest_sha256"])
     frozen_test_hash = str(frozen.get("dataset", {}).get("sealed_test_sha256", ""))
-    if actual_test_hash != expected_test_hash or frozen_test_hash != expected_test_hash:
-        raise TestSealError("sealed test manifest hash mismatch")
+    if frozen_test_hash != expected_test_hash:
+        raise TestSealError("frozen and sealed test hashes disagree")
+    generation = str(seal.get("generation") or "v3")
+    if generation not in {"v3", "v4"}:
+        raise TestSealError(f"unsupported final-test generation: {generation}")
 
     state_dir.mkdir(parents=True, exist_ok=True)
-    marker = state_dir / "v3_final_test.opening.json"
-    receipt = state_dir / "v3_final_test.receipt.json"
+    marker = state_dir / f"{generation}_final_test.opening.json"
+    receipt = state_dir / f"{generation}_final_test.receipt.json"
     if receipt.exists():
-        raise TestSealError("v3 final test has already been opened and completed")
+        raise TestSealError(f"{generation} final test has already been opened and completed")
     marker_payload = {
         "schema_version": 1,
         "status": "opening_claimed",
+        "generation": generation,
         "claimed_at": datetime.now(UTC).isoformat(),
         "frozen_config": str(frozen_config),
         "frozen_config_sha256": actual_frozen_hash,
-        "test_manifest_sha256": actual_test_hash,
+        "test_manifest_sha256": expected_test_hash,
     }
     try:
         descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     except FileExistsError as exc:
-        raise TestSealError("v3 final-test opening is already claimed") from exc
+        raise TestSealError(f"{generation} final-test opening is already claimed") from exc
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         json.dump(marker_payload, stream, indent=2, sort_keys=True)
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
+    actual_test_hash = sha256_file(test_manifest)
+    if actual_test_hash != expected_test_hash:
+        raise TestSealError("sealed test manifest hash mismatch after opening claim")
     return TestOpening(
+        generation=generation,
         bundle=bundle,
         frozen_config=frozen_config,
         frozen_sha256=actual_frozen_hash,
@@ -111,6 +123,7 @@ def complete_test_opening(opening: TestOpening, reports: dict[str, Path]) -> Pat
     payload: dict[str, Any] = {
         "schema_version": 1,
         "status": "completed_no_post_test_tuning",
+        "generation": opening.generation,
         "completed_at": datetime.now(UTC).isoformat(),
         "frozen_config": str(opening.frozen_config),
         "frozen_config_sha256": opening.frozen_sha256,

@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "configuration_id": "moscow-real-v4-final-sage-k30-multinomial-risk",
+  "status": "frozen_before_final_test",
+  "frozen_at": "2026-09-03T14:15:11Z",
+  "dataset": {
+    "bundle": "data/evaluation/moscow_real_v4",
+    "bundle_fingerprint": "0eb03372570a8cd4c703aa07789065717027ba7223024d8e4361d74faa1b489f",
+    "gallery_manifest": "data/evaluation/moscow_real_v4/gallery.parquet",
+    "gallery_sha256": "ff7cbc7e7147226e5aed41c4ccb1048d4bc17fec965c7fc5e0cb94e5bb1c35da",
+    "development_sha256": "17d0f339d3a34d4826a2d7cf337861a566a48b23d76fb1353919d9733fbcf64d",
+    "calibration_sha256": "e2e088d5fecabc8b95c29fffcf91d0248355fafc0d0cc312a0100ab7eee4e64d",
+    "sealed_test_sha256": "332567068c27cd58eb7951823c3102d05cf7263abb152ffb49db4e280be0e34f",
+    "test_seal": "data/evaluation/moscow_real_v4/test_seal.json",
+    "test_seal_sha256": "b23ee266f9dcca876ac36b08205da123bc2f45422427df6a3c689620ee6cd72d"
+  },
+  "retriever": {
+    "name": "sage-vitb",
+    "repository": "https://github.com/chenshunpeng/SAGE",
+    "revision": "c7d6241c4885526d99d6c78c158024fc2a37097c",
+    "checkpoint": "huggingface:shunpeng/SAGE@2a2ea9964cdbdfd2211e7c625064a9d5e4678245/SAGE_No-Encoder_Vit-B.pth",
+    "checkpoint_revision": "2a2ea9964cdbdfd2211e7c625064a9d5e4678245",
+    "checkpoint_sha256": "8cfed7d4e8bbcdee4c016b29211f64ffd015c3cbae538034b3352c858af6a27e",
+    "preprocessing": "official-imagenet-normalize-then-resize-322-v1",
+    "descriptor_dimension": 8448,
+    "descriptor_dtype": "float32",
+    "normalized": true,
+    "license_audit": "official repository and Hugging Face model card state MIT; technical audit only, not legal advice"
+  },
+  "embedding": {
+    "directory": "data/embeddings/moscow_real_v4/sage-vitb",
+    "artifact_generation": "38ce434da2714112aa19974f96a7a856",
+    "build_metadata_sha256": "0b20e9941580a2883b9ca00d5a642da0cab9c66261bf09a9239880d33154f00c",
+    "descriptors_sha256": "0ffcbbe2761e6e56d56265e7125e4e6983ddebda6cb67f565d61ca4471e6f527",
+    "id_mapping_sha256": "1be78727b4d8714c2bb5cb2a28948bc66d8b00f1e7248ce951a0c7ccf030c1e1",
+    "reference_metadata_sha256": "8578182014de9cd97cc99cfa08b07dfa844aa612aa4f8c18692d58307eab0706",
+    "descriptor_count": 20487,
+    "failure_count": 0
+  },
+  "retrieval": {
+    "index_type": "faiss.IndexFlatIP",
+    "similarity": "cosine_via_inner_product",
+    "top_k": 30,
+    "query_aggregation": "single",
+    "reranker": null
+  },
+  "localization": {
+    "aggregation": "density_aware_mode_vote",
+    "cluster_radius_m": 100.0,
+    "max_cluster_diameter_m": 150.0,
+    "estimator": "weighted_medoid",
+    "score_temperature": 0.08,
+    "rank_decay_exponent": 0.5,
+    "good_hypothesis_separation_m": 500.0,
+    "confidence_threshold": 0.9779782812443042,
+    "catastrophic_risk_threshold": 0.017510606503924175,
+    "safety_gates": {
+      "out_of_coverage_similarity": null,
+      "minimum_cluster_mass": null,
+      "minimum_cluster_mass_margin": null,
+      "minimum_cluster_candidates": null
+    },
+    "status_rules": {
+      "ok": "correctness_score_gte_threshold_and_catastrophic_risk_lte_threshold",
+      "approximate": "not_enabled_in_v4",
+      "low_confidence": "one_or_both_frozen_score_thresholds_fail",
+      "out_of_coverage": "no_retrieval_candidates"
+    }
+  },
+  "confidence": {
+    "method": "standardized_multinomial_logistic",
+    "classes": {
+      "0": "localization_error_m_lte_100",
+      "1": "localization_error_m_100_to_500",
+      "2": "localization_error_m_gt_500"
+    },
+    "feature_count": 45,
+    "artifact": "configs/moscow_real_v4_multinomial_confidence.json",
+    "artifact_sha256": "d4d9af72f1a294716e206040fd72b62bfbdd33d88c5f123a72c70e67d508ff00",
+    "model_fit_split": "development_only_geographically_grouped_cv",
+    "threshold_selection_split": "calibration_only",
+    "operating_point": "primary_90_precision_1_percent_catastrophic",
+    "empirical_calibration_precision_lte_100m": 0.9516129032258065,
+    "calibration_answer_rate": 0.08266666666666667,
+    "calibration_answered_count": 62,
+    "calibration_false_gt_100m_count": 3,
+    "calibration_false_gt_500m_count": 0,
+    "calibration_wilson_95": [0.8671196207267605, 0.9834083141494193]
+  },
+  "verification": {
+    "enabled": false,
+    "backend": "opencv_sift",
+    "verify_top_k": 10,
+    "geometric_weight": 0.35
+  },
+  "safety_gates": {
+    "production_sources": ["mapillary", "kartaview"],
+    "exact_aoi_required": true,
+    "gallery_query_sequence_disjoint": true,
+    "uncertainty_radius_calibrated": false,
+    "final_test_maximum_runs": 1
+  },
+  "index": {
+    "directory": "data/indexes/moscow_real_v4/sage-vitb",
+    "index_id": "moscow-real-v4-sage-vitb",
+    "city_id": "moscow",
+    "artifact_generation": "d04ce556ddfd4288a2562d61213375e8",
+    "index_metadata_sha256": "26c8f1f87e0500d75039de5785e58b1bfd0730390b7f66a1b149abd08d07539e",
+    "index_faiss_sha256": "cda9739cc7269881ece33f70de9c4b6bfb027b38150bd6c228fd736cc4270ad2",
+    "id_mapping_sha256": "5f1e4d46b414c4fa3eecf5606dd44beea4ec617769a5c2becca8b7019545936f",
+    "reference_metadata_sha256": "a13a2c6d257b4d04f8ab1a0f94d4559a8a5ac1c84fa3b886d2037c9948e67e00",
+    "local_gallery_density_radii_m": [25, 50, 100],
+    "gallery_size": 20487,
+    "index_size_bytes": 692296749
+  },
+  "selection_evidence": {
+    "protocol": "configs/moscow_real_v4_experiment_protocol.json",
+    "protocol_sha256": "879dfda611919908de1aabcbe7f01799b78bded3c4fa5c0f196a20eb73302ce0",
+    "architecture_freeze": "configs/moscow_real_v4_architecture_frozen.json",
+    "architecture_freeze_sha256": "a602e847ef0a1eca2715a9923fe2b6ae608437926af87021340309785da84880",
+    "development_report": "data/evaluation/moscow_real_v4/reports/final_policy_development.json",
+    "development_report_sha256": "76c1c22e941684447c034c9bb8f7aaebdc25887491d4df4cd062db64c52655d9",
+    "calibration_report": "data/evaluation/moscow_real_v4/reports/final_policy_calibration.json",
+    "calibration_report_sha256": "876b719455b26beea9ad2d05be68cc3c39280a9114ac3f761040ad942aab76bf",
+    "selected_candidate": "sage-vitb-k30-density-aware-multinomial-risk",
+    "selection_scope": "development_architecture_and_calibration_thresholds_only"
+  },
+  "historical_baseline": {
+    "config": "configs/moscow_real_v3_frozen.json",
+    "config_sha256": "ddcfa0a66dbf0d4bbf31a292be38b07ceb6e93b60a983aaa46cd23679cafd0e2",
+    "confidence_artifact": "configs/moscow_real_v3_confidence_model.json",
+    "confidence_artifact_sha256": "5afee6b1a1abea5c2701bc77e05d08a00b7e0a0657985567146e1de82afe5f82"
+  },
+  "code_fingerprints": {
+    "product_policy_sha256": "dccfc2b25bb50b7e1754c24aedc23f0e5b9d4f691674c9218f4de4542c6d1b2e",
+    "confidence_model_sha256": "ff58bc5981afa0c5a55bb5b0507830ee9f57ffab091349c965d90885f9aa4ed8",
+    "product_runtime_sha256": "3c4dfcaf5c7a58b1ba0f09dac65cc6ed3a9c9c18fee117197da65a4a31faed5d",
+    "service_sha256": "eb32e46bb123b12320f591d215d696bbc14a4c519c8d0e2fb1f2b98a85ede59c",
+    "final_policy_sha256": "894bac1a4ad93016ea4c62e65a47c4217237a9284dda54e232f35c2bffae7ac8"
+  }
+}

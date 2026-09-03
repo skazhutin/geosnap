@@ -746,13 +746,15 @@ def build_index_from_embedding_artifacts(
             raise FaissIndexError("local density enrichment requires finite lat/lon") from exc
         if not np.isfinite(coordinates).all():
             raise FaissIndexError("local density enrichment requires finite lat/lon")
-        densities = BallTree(coordinates, metric="haversine").query_radius(
-            coordinates,
-            r=100.0 / 6_371_008.8,
-            count_only=True,
-        )
-        for metadata, density in zip(reference_metadata, densities, strict=True):
-            metadata["local_gallery_density_100m"] = int(density)
+        tree = BallTree(coordinates, metric="haversine")
+        for radius_m in (25, 50, 100):
+            densities = tree.query_radius(
+                coordinates,
+                r=radius_m / 6_371_008.8,
+                count_only=True,
+            )
+            for metadata, density in zip(reference_metadata, densities, strict=True):
+                metadata[f"local_gallery_density_{radius_m}m"] = int(density)
     index = FaissExactIndex.build(
         descriptors,
         ids,
@@ -762,6 +764,9 @@ def build_index_from_embedding_artifacts(
         city_id=city_id,
         extra_metadata={
             "embedding_input_signature": embedding_metadata.get("input_signature"),
+            "local_gallery_density_radii_m": (
+                [25, 50, 100] if include_local_density_100m else []
+            ),
             "local_gallery_density_100m": bool(include_local_density_100m),
         },
     )

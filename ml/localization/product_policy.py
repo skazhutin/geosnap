@@ -6,6 +6,7 @@ import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -53,6 +54,9 @@ class GeographicMode:
     independent_sequences: int
     provider_count: int
     viewpoint_bucket_count: int
+    radius_m: float
+    diameter_m: float
+    median_pairwise_distance_m: float
     local_gallery_density_100m: float
 
 
@@ -87,12 +91,34 @@ def _viewpoint_bucket(candidate: Candidate) -> str:
     return str(int((heading % 360.0) // 45.0))
 
 
-def _candidate_density(candidate: Candidate) -> float:
+def _candidate_density(candidate: Candidate, radius_m: int = 100) -> float:
     try:
-        value = float(candidate.metadata.get("local_gallery_density_100m", 1.0))
+        value = float(candidate.metadata.get(f"local_gallery_density_{radius_m}m", 1.0))
     except (TypeError, ValueError):
         return 1.0
     return value if math.isfinite(value) and value >= 1.0 else 1.0
+
+
+def _pairwise_distances(candidates: Sequence[Candidate]) -> list[float]:
+    return [
+        haversine_m(left.lat, left.lon, right.lat, right.lon)
+        for position, left in enumerate(candidates)
+        for right in candidates[position + 1 :]
+    ]
+
+
+def _reference_age_days(candidate: Candidate) -> float | None:
+    value = candidate.metadata.get("captured_at")
+    if value is None or not str(value).strip():
+        return None
+    try:
+        captured = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if captured.tzinfo is None:
+        captured = captured.replace(tzinfo=UTC)
+    # A fixed experiment anchor keeps this feature deterministic in production.
+    return max(0.0, (datetime(2026, 9, 3, tzinfo=UTC) - captured.astimezone(UTC)).total_seconds() / 86400.0)
 
 
 def _similarity_evidence(
@@ -241,6 +267,7 @@ def aggregate_geographic_modes(
     total_score = sum(value[4] for value in intermediate)
     modes: list[GeographicMode] = []
     for mode_rank, (cluster, lat, lon, spread, score) in enumerate(intermediate, start=1):
+        pairwise = _pairwise_distances(cluster.candidates)
         modes.append(
             GeographicMode(
                 rank=mode_rank,
@@ -255,6 +282,12 @@ def aggregate_geographic_modes(
                 ),
                 provider_count=len({_candidate_provider(candidate) for candidate in cluster.candidates}),
                 viewpoint_bucket_count=len({_viewpoint_bucket(candidate) for candidate in cluster.candidates}),
+                radius_m=max(
+                    haversine_m(lat, lon, candidate.lat, candidate.lon)
+                    for candidate in cluster.candidates
+                ),
+                diameter_m=max(pairwise, default=0.0),
+                median_pairwise_distance_m=percentile(pairwise, 0.5) if pairwise else 0.0,
                 local_gallery_density_100m=percentile(
                     [_candidate_density(candidate) for candidate in cluster.candidates], 0.5
                 ),
@@ -266,6 +299,8 @@ def aggregate_geographic_modes(
     top1 = candidates[0]
     top2_similarity = candidates[1].retrieval_score if len(candidates) > 1 else top1.retrieval_score
     winner_ids = {candidate.reference_id for candidate in winner.candidates}
+    retrieval_evidence_total = sum(evidence.values())
+    winner_retrieval_evidence = sum(evidence[candidate.reference_id] for candidate in winner.candidates)
     winner_top_similarity = max(
         candidate.retrieval_score for candidate in winner.candidates
     )
@@ -283,6 +318,16 @@ def aggregate_geographic_modes(
         else None
     )
     winner_providers = {_candidate_provider(candidate) for candidate in winner.candidates}
+    winner_sequences: dict[str, float] = defaultdict(float)
+    winner_provider_evidence: dict[str, float] = defaultdict(float)
+    for candidate in winner.candidates:
+        winner_sequences[_candidate_sequence_key(candidate)] += evidence[candidate.reference_id]
+        winner_provider_evidence[_candidate_provider(candidate)] += evidence[candidate.reference_id]
+    winner_evidence_total = sum(winner_sequences.values())
+    sequence_shares = [value / winner_evidence_total for value in winner_sequences.values()]
+    effective_support = (
+        1.0 / sum(value * value for value in sequence_shares) if sequence_shares else 0.0
+    )
     separation = (
         haversine_m(winner.lat, winner.lon, second.lat, second.lon)
         if second is not None
@@ -317,9 +362,34 @@ def aggregate_geographic_modes(
             + 0.05 * query_quality,
         ),
     )
+    scores = [candidate.retrieval_score for candidate in candidates]
+    top5 = scores[: min(5, len(scores))]
+    top10 = scores[: min(10, len(scores))]
+    winner_scores = [candidate.retrieval_score for candidate in winner.candidates]
+    outside_scores = [
+        candidate.retrieval_score
+        for candidate in candidates
+        if candidate.reference_id not in winner_ids
+    ]
+    reference_ages = [
+        value
+        for candidate in winner.candidates
+        if (value := _reference_age_days(candidate)) is not None
+    ]
+    top1_to_selected = haversine_m(top1.lat, top1.lon, winner.lat, winner.lon)
     features = {
         "top1_similarity": top1.retrieval_score,
+        "top2_similarity": top2_similarity,
         "top1_top2_similarity_margin": top1.retrieval_score - top2_similarity,
+        "top1_top5_similarity_margin": top1.retrieval_score - top5[-1],
+        "top5_similarity_mean": sum(top5) / len(top5),
+        "top5_similarity_std": float(math.sqrt(sum((value - sum(top5) / len(top5)) ** 2 for value in top5) / len(top5))),
+        "top5_similarity_min": min(top5),
+        "top5_similarity_max": max(top5),
+        "top10_similarity_mean": sum(top10) / len(top10),
+        "top10_similarity_std": float(math.sqrt(sum((value - sum(top10) / len(top10)) ** 2 for value in top10) / len(top10))),
+        "top10_similarity_min": min(top10),
+        "top10_similarity_max": max(top10),
         "winning_cluster_score": winner.raw_score,
         "second_cluster_score": second_score,
         "geographic_mode_margin": winner.mass_fraction
@@ -328,10 +398,51 @@ def aggregate_geographic_modes(
         "provider_diversity": float(winner.provider_count),
         "winning_candidate_count": float(len(winner.candidates)),
         "winning_cluster_p90_spread_m": winner.p90_spread_m,
+        "winning_cluster_radius_m": winner.radius_m,
+        "winning_cluster_diameter_m": winner.diameter_m,
+        "winning_cluster_median_pairwise_distance_m": winner.median_pairwise_distance_m,
         "best_second_mode_separation_m": separation,
         "local_gallery_density_100m": winner.local_gallery_density_100m,
+        "local_gallery_density_25m": percentile(
+            [_candidate_density(candidate, 25) for candidate in winner.candidates], 0.5
+        ),
+        "local_gallery_density_50m": percentile(
+            [_candidate_density(candidate, 50) for candidate in winner.candidates], 0.5
+        ),
         "best_winner_rank": float(min(candidate.rank for candidate in winner.candidates)),
+        "winner_rank_mean": sum(candidate.rank for candidate in winner.candidates) / len(winner.candidates),
+        "winner_rank_max": float(max(candidate.rank for candidate in winner.candidates)),
         "top1_agrees_with_winner": float(top1.reference_id in winner_ids),
+        "medoid_is_top1": float(top1_to_selected <= 0.01),
+        "top1_to_selected_distance_m": top1_to_selected,
+        "geographic_mode_count": float(len(modes)),
+        "winning_mode_retrieval_mass_fraction": (
+            winner_retrieval_evidence / retrieval_evidence_total
+            if retrieval_evidence_total > 0
+            else 0.0
+        ),
+        "winner_similarity_variance": float(
+            sum((value - sum(winner_scores) / len(winner_scores)) ** 2 for value in winner_scores)
+            / len(winner_scores)
+        ),
+        "outside_similarity_variance": float(
+            sum((value - sum(outside_scores) / len(outside_scores)) ** 2 for value in outside_scores)
+            / len(outside_scores)
+        ) if outside_scores else 0.0,
+        "dominant_mode_support_fraction": len(winner.candidates) / len(candidates),
+        "heading_bin_count": float(winner.viewpoint_bucket_count),
+        "maximum_single_sequence_contribution": max(sequence_shares, default=0.0),
+        "maximum_provider_contribution": (
+            max(winner_provider_evidence.values(), default=0.0) / winner_evidence_total
+            if winner_evidence_total > 0
+            else 0.0
+        ),
+        "effective_independent_support_count": effective_support,
+        "winner_reference_age_days_median": percentile(reference_ages, 0.5) if reference_ages else 0.0,
+        "winner_reference_age_days_range": (
+            max(reference_ages) - min(reference_ages) if reference_ages else 0.0
+        ),
+        "winner_reference_age_available_fraction": len(reference_ages) / len(winner.candidates),
         "cross_provider_winner_evidence": float(
             len(winner_providers) >= 2
         ),
@@ -366,6 +477,11 @@ def aggregate_geographic_modes(
         "independent_sequence_count": winner.independent_sequences,
         "provider_count": winner.provider_count,
         "viewpoint_bucket_count": winner.viewpoint_bucket_count,
+        "winner_candidate_ranks": [candidate.rank for candidate in winner.candidates],
+        "winning_mode_retrieval_mass_fraction": features["winning_mode_retrieval_mass_fraction"],
+        "maximum_single_sequence_contribution": features["maximum_single_sequence_contribution"],
+        "maximum_provider_contribution": features["maximum_provider_contribution"],
+        "effective_independent_support_count": effective_support,
         "legacy_handwritten_confidence": heuristic_confidence,
         "geographic_similarity_margin": geographic_similarity_margin,
         "mode_summaries": [

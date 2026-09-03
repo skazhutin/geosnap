@@ -601,11 +601,14 @@ def create_localization_service() -> LocalizationService:
         cache_dir=model_cache,
     )
     if use_product_policy:
-        from .confidence_model import ConfidenceModel
+        from .confidence_model import ConfidenceModel, MultinomialRiskModel
         from .product_runtime import ProductSpatialLocalizer, product_policy_from_frozen
 
-        confidence_model = ConfidenceModel.from_dict(
-            json.loads(frozen.confidence_model_path.read_text(encoding="utf-8"))
+        artifact = json.loads(frozen.confidence_model_path.read_text(encoding="utf-8"))
+        confidence_model = (
+            MultinomialRiskModel.from_dict(artifact)
+            if artifact.get("method") == "standardized_multinomial_logistic"
+            else ConfidenceModel.from_dict(artifact)
         )
         localizer = ProductSpatialLocalizer(
             product_policy_from_frozen(frozen_localization),

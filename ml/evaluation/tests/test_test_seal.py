@@ -15,7 +15,7 @@ def _write(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+def _fixture(tmp_path: Path, *, generation: str = "v3") -> tuple[Path, Path, Path, Path]:
     bundle = tmp_path / "bundle"
     test = bundle / "test_queries.parquet"
     test.parent.mkdir(parents=True)
@@ -24,13 +24,14 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     _write(
         bundle / "test_seal.json",
         {
+            "generation": generation,
             "status": "sealed_before_policy_tuning",
             "maximum_runs": 1,
             "test_manifest": test.name,
             "test_manifest_sha256": test_hash,
         },
     )
-    frozen = tmp_path / "moscow_real_v3_frozen.json"
+    frozen = tmp_path / f"moscow_real_{generation}_frozen.json"
     _write(
         frozen,
         {
@@ -81,3 +82,16 @@ def test_test_seal_rejects_unhashed_frozen_change(tmp_path: Path) -> None:
             frozen_hash=frozen_hash,
             state_dir=state,
         )
+
+
+def test_v4_test_seal_uses_generation_specific_one_shot_state(tmp_path: Path) -> None:
+    bundle, frozen, frozen_hash, state = _fixture(tmp_path, generation="v4")
+    opening = begin_test_opening(
+        bundle=bundle,
+        frozen_config=frozen,
+        frozen_hash=frozen_hash,
+        state_dir=state,
+    )
+
+    assert opening.generation == "v4"
+    assert opening.marker.name == "v4_final_test.opening.json"

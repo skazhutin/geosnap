@@ -202,6 +202,8 @@ def test_factory_uses_frozen_benchmark_runtime_contract(
     index_dir.mkdir()
     metadata = index_dir / "index_metadata.json"
     metadata.write_text('{"fixture": true}\n', encoding="utf-8")
+    gallery = tmp_path / "gallery.parquet"
+    gallery.write_bytes(b"fixture gallery")
     runtime = tmp_path / "frozen.json"
     runtime.write_text(
         json.dumps(
@@ -225,7 +227,10 @@ def test_factory_uses_frozen_benchmark_runtime_contract(
                     "score_temperature": 0.08,
                 },
                 "verification": {"enabled": False},
-                "dataset": {"gallery_sha256": "unused-by-service"},
+                "dataset": {
+                    "gallery_manifest": str(gallery),
+                    "gallery_sha256": sha256_file(gallery),
+                },
                 "index": {
                     "directory": str(index_dir),
                     "city_id": "moscow",

@@ -14,7 +14,10 @@ ENV PATH="/app/.venv/bin:${PATH}"
 
 COPY apps/backend/app ./app
 COPY ml ./ml
-COPY configs/moscow_real_v2_frozen.json ./configs/moscow_real_v2_frozen.json
+COPY configs/moscow_production_frozen.json ./configs/moscow_production_frozen.json
+COPY configs/moscow_production_frozen.sha256 ./configs/moscow_production_frozen.sha256
+COPY configs/moscow_production_smoke_set.json ./configs/moscow_production_smoke_set.json
+COPY configs/moscow_real_v3_confidence_model.json ./configs/moscow_real_v3_confidence_model.json
 
 EXPOSE 8000
 

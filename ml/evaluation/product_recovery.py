@@ -24,7 +24,7 @@ from ml.localization.product_policy import (
     aggregate_geographic_modes,
 )
 
-K_VALUES = (5, 10, 15, 20, 30, 50)
+K_VALUES = (5, 10, 15, 20, 30, 40, 50)
 AGGREGATION_VALUES = tuple(AggregationStrategy)
 BOOTSTRAP_SEED = 20260902
 
@@ -87,10 +87,14 @@ def _gallery_metadata_and_density(gallery_manifest: Path) -> dict[str, dict[str,
     frame = read_manifest(gallery_manifest, allow_empty=False)
     radians = np.radians(frame[["lat", "lon"]].to_numpy(dtype=np.float64))
     tree = BallTree(radians, metric="haversine")
-    density = tree.query_radius(radians, r=100.0 / EARTH_RADIUS_M, count_only=True)
+    densities = {
+        radius: tree.query_radius(radians, r=radius / EARTH_RADIUS_M, count_only=True)
+        for radius in (25.0, 50.0, 100.0)
+    }
     result: dict[str, dict[str, Any]] = {}
-    for row, count in zip(frame.to_dict("records"), density, strict=True):
-        row["local_gallery_density_100m"] = int(count)
+    for index, row in enumerate(frame.to_dict("records")):
+        for radius, values in densities.items():
+            row[f"local_gallery_density_{int(radius)}m"] = int(values[index])
         result[str(row["id"])] = row
     return result
 
@@ -176,6 +180,28 @@ def replay_report(
                 "query_id": query_id,
                 "source": str(query_row.get("source") or "unknown").lower(),
                 "region": str(query_row.get("evaluation_area_h3") or "unknown"),
+                "h3_coarse": str(query_row.get("h3_coarse") or "unknown"),
+                "resolution_bucket": (
+                    "lt1600"
+                    if max(int(query_row.get("width") or 0), int(query_row.get("height") or 0)) < 1600
+                    else (
+                        "1600_2499"
+                        if max(int(query_row.get("width") or 0), int(query_row.get("height") or 0)) < 2500
+                        else "ge2500"
+                    )
+                ),
+                "local_gallery_density_bucket": str(
+                    source_row.get("local_gallery_density_bucket") or "unknown"
+                ),
+                "positive_provider_pair": str(
+                    source_row.get("positive_provider_pair") or "unknown"
+                ),
+                "positive_heading_gap_bucket": str(
+                    source_row.get("positive_heading_gap_bucket") or "unknown"
+                ),
+                "positive_temporal_gap_bucket": str(
+                    source_row.get("positive_temporal_gap_bucket") or "unknown"
+                ),
                 "evaluation_geo_group_id": str(
                     query_row.get("evaluation_geo_group_id") or query_id
                 ),

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from ml.localization.confidence_model import FEATURE_NAMES
 from ml.localization.models import Candidate
 from ml.localization.product_policy import (
     AggregationStrategy,
@@ -29,7 +32,10 @@ def _candidate(
             "source": source,
             "sequence_id": sequence,
             "heading": rank * 20.0,
+            "local_gallery_density_25m": 1,
+            "local_gallery_density_50m": 2,
             "local_gallery_density_100m": 4,
+            "captured_at": "2024-01-01T00:00:00Z",
         },
     )
 
@@ -112,20 +118,7 @@ def test_feature_construction_is_pixel_free_and_complete() -> None:
         ],
     )
 
-    assert set(result.features) == {
-        "top1_similarity",
-        "top1_top2_similarity_margin",
-        "winning_cluster_score",
-        "second_cluster_score",
-        "geographic_mode_margin",
-        "independent_sequence_count",
-        "provider_diversity",
-        "winning_candidate_count",
-        "winning_cluster_p90_spread_m",
-        "best_second_mode_separation_m",
-        "local_gallery_density_100m",
-        "best_winner_rank",
-        "top1_agrees_with_winner",
-        "cross_provider_winner_evidence",
-    }
+    assert set(result.features) == set(FEATURE_NAMES)
     assert result.features["independent_sequence_count"] == 2
+    assert result.features["effective_independent_support_count"] == pytest.approx(2, abs=0.01)
+    assert result.features["winning_cluster_diameter_m"] > 0

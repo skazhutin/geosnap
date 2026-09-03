@@ -1,12 +1,47 @@
-# Real Moscow evaluation — current v3 candidate
+# Real Moscow evaluation — final production policy
 
-Актуально на 2026-09-03. Полная Part 2.5 evidence chain, включая K grid,
-aggregation/confidence experiments, SALAD/SAGE/SelaVPR++/CricaVPR audit и exact
-stratum denominators, находится в
-[phase2_5_product_recovery.md](phase2_5_product_recovery.md). V1 и V2 ниже
-сохраняются как immutable history и не использовались для v3 tuning.
+Актуально на 2026-09-03. Авторитетный current result, полный v4 decision-layer
+audit и production hashes находятся в
+[final_localization_core.md](final_localization_core.md). Part 2.5 model bake-off
+остаётся в [phase2_5_product_recovery.md](phase2_5_product_recovery.md).
+V1/V2/V3 ниже — immutable history; все четыре final tests permanently opened.
 
-## V3 frozen candidate
+## V4 one-shot final decision
+
+V4 использует 20 487 gallery references, 751 development, 750 calibration и
+1 499 test queries. Все historical v1/v2/v3 query sequences исключены из query
+eligibility. Sequence/source/path/URL/hash/pHash/geographic-group leakage между
+любыми splits равен нулю, geographic embargo превышает 250 м.
+
+Development сохранил SAGE K=30 density-aware aggregation и выбрал небольшую
+multinomial risk architecture. Calibration only выбрала candidate thresholds.
+Обе frozen policies были запущены на одном SAGE stream в одной sealed test
+transaction. Candidate потерял utility и safety, поэтому production contract
+следует prescribed Case 2: exact Part 2.5 policy на v4 gallery/index.
+
+| V4 final-test metric | Exact Part 2.5 — **production** | Frozen multinomial candidate |
+|---|---:|---:|
+| <=100 м R@1/5/10/20/30/50 | 28,82 / 36,96 / 39,89 / 42,96 / 44,56 / 47,23% | identical |
+| Median / p75 / p90 positive rank | 78 / 1 469,5 / 6 816,4 | identical |
+| Raw <=25/50/100 м | 13,34 / 21,21 / 29,42% | identical |
+| Raw median / p90 error | 7 563,11 / 25 902,95 м | identical |
+| Answer rate | **127/1 499 (8,47%)** | 91/1 499 (6,07%) |
+| Bootstrap 95% answer-rate CI | **7,07–9,94%** | 4,87–7,34% |
+| Conditional <=25/50/100 м | **59,84 / 84,25 / 96,85%** | 58,24 / 83,52 / 93,41% |
+| Wilson 95% conditional <=100 м | **92,18–98,77%** | 86,35–96,94% |
+| All-query answered-and-correct <=100 м | **8,21%** | 5,67% |
+| Accepted >100 / 100–500 / >500 м | **4 / 1 / 3** | 6 / 1 / 5 |
+| Catastrophic accepted rate | **3/127 (2,36%)** | 5/91 (5,49%) |
+| Accepted median / p90 / p95 | **21,29 / 62,79 / 73,47 м** | 21,47 / 66,94 / 786,68 м |
+| End-to-end p50 / p90 / p95 | **115,81 / 131,70 / 143,25 мс** | identical retrieval stream |
+
+Candidate removed 58 correct answers and added 20, prevented 2 baseline
+catastrophes and introduced 4. No post-test tuning occurred. Production config:
+`configs/moscow_production_frozen.json`, SHA-256
+`9c0c38f93d4c4f76eff8ef821508da0aafdd104f04ddd932b48d2834bbd2984e`.
+The result is useful but misses the preferred <=1% catastrophic target.
+
+## Historical v3 frozen candidate
 
 Новый split содержит 20 031 gallery references, 602 development, 603
 calibration и 1 195 once-opened final-test queries. Между всеми query splits и
@@ -30,10 +65,10 @@ confidence и threshold `0.9349250249145314`. Frozen config SHA-256:
 | Accepted median / p90 / p95 | undefined | 18,21 / 68,09 / 90,36 м |
 | End-to-end p50 / p90 / p95 | 141,31 / 171,47 / 191,86 мс | 138,74 / 169,18 / 188,48 мс |
 
-V3 восстанавливает ненулевой полезный режим, но preferred target не достигнут:
+V3 восстановил ненулевой полезный режим, но preferred target не был достигнут:
 answer rate меньше 10%, а 3/92 accepted результатов (3,26%) имеют ошибку >500
-м. Конфигурация не менялась после test. Следующая итерация требует нового
-sealed namespace.
+м. Конфигурация не менялась после test; этот test не использовался для v4
+selection.
 
 ## Historical v2 candidate
 
@@ -77,7 +112,7 @@ checkpoint-license review. Five-crop дал только +1,39 pp R@20, CI
 `weighted_medoid`, verification disabled. Material gate не пройден; report не
 называет deployable retrieval materially better.
 
-## Production retrieval depth
+## Historical v2 retrieval depth
 
 | K | Recall at depth | R@50 retained | All-query <=100 м at threshold 0 | Answer rate | >100 м errors |
 |---|---:|---:|---:|---:|---:|
@@ -85,7 +120,8 @@ checkpoint-license review. Five-crop дал только +1,39 pp R@20, CI
 | 20 | 32,21% | 85,71% | 6,36% | 6,56% | 1 |
 | 50 | 37,57% | 100,00% | 3,18% | 3,18% | 0 |
 
-Predeclared rule требует >=90% R@50, поэтому frozen production depth — K=50.
+Historical predeclared rule требует >=90% R@50, поэтому frozen v2 depth был
+K=50.
 Benchmark, confidence calibration, service и smoke читают один tracked runtime
 artifact и отвергают конфликтующие overrides.
 
@@ -131,7 +167,7 @@ Test был запущен один раз после freeze; post-test tuning �
 
 Это честный fail-closed результат, а не достижение 90% precision.
 
-## V2 production artifact and host smoke
+## Historical v2 artifact and host smoke
 
 - index: `data/indexes/moscow_real_v2/megaloc/`, 19 524 rows;
 - `index.faiss`: 659 755 053 bytes, SHA-256

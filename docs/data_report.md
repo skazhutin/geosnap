@@ -1,13 +1,14 @@
 # Отчёт о реальных данных Москвы
 
 Актуально на 2026-09-03. Этот документ сохраняет acquisition/data evidence для
-исторического `moscow_real_v2`; текущий frozen evaluation namespace —
-`moscow_real_v3`. Полный Phase 2
+исторического `moscow_real_v2`; последний и финальный pre-production evaluation
+namespace — `moscow_real_v4`. Полный Phase 2
 experiment record находится в
 [phase2_quality_improvement.md](phase2_quality_improvement.md), model/test
-summary — в [evaluation_report.md](evaluation_report.md), а v3 recovery — в
-[phase2_5_product_recovery.md](phase2_5_product_recovery.md). V1/V2 сохранены
-как immutable historical bundles.
+summary — в [evaluation_report.md](evaluation_report.md), v3 recovery — в
+[phase2_5_product_recovery.md](phase2_5_product_recovery.md), а финальный
+contract — в [final_localization_core.md](final_localization_core.md).
+V1/V2/V3 сохранены как immutable historical bundles.
 
 ## Production data contract
 
@@ -21,6 +22,44 @@ MSLS, Commons и другие training/benchmark datasets исключены и�
 manifest, embeddings и FAISS. Каждая retained reference сохраняет stable ID,
 provider/source image ID, provider-scoped sequence, coordinates, timestamps,
 heading, local image/hash, license, attribution и source/profile URLs.
+
+## Final leakage-resistant v4 bundle
+
+V4 использует существующий clean source pool без acquisition. Все 2 991 unique
+provider sequences, использованные как v1/v2/v3 development/calibration/test
+queries, исключены из новой query eligibility. Это query exclusion: historical
+frames остаются допустимыми gallery references только там, где split leakage
+rules это разрешают, чтобы не разрушать reference coverage.
+
+| Split | Rows | Mapillary | KartaView | Provider sequences | Geographic components | H3 areas |
+|---|---:|---:|---:|---:|---:|---:|
+| Gallery | 20 487 | 14 099 | 6 388 | 13 698 | — | 1 674 |
+| Development | 751 | 748 | 3 | 729 | 229 | 290 |
+| Calibration | 750 | 747 | 3 | 734 | 230 | 287 |
+| Sealed test | 1 499 | 1 484 | 15 | 1 474 | 447 | 574 |
+
+Resolution buckets `<1600 / 1600–2499 / >=2500` are 1/735/15,
+2/734/14 and 4/1 463/32 for development, calibration and test. Local gallery
+density within 100 m has median 2 for all three query splits; test buckets
+`1 / 2–5 / 6–20 / >20` contain 570/734/172/23 queries.
+
+All six split pairs have zero overlap in record/source/stable-source ID,
+image path, source URL, exact file SHA-256, provider sequence, geographic group
+and pHash-near pairs. Development/calibration, development/test and calibration/
+test minimum distances are 251,54/250,97/250,32 м with zero embargo violations.
+Every query has a gallery positive <=100 м. KartaView query representation is
+only 3/3/15, so provider-specific conclusions are explicitly uncertain.
+
+Fingerprints:
+
+- bundle: `0eb03372570a8cd4c703aa07789065717027ba7223024d8e4361d74faa1b489f`;
+- gallery: `ff7cbc7e7147226e5aed41c4ccb1048d4bc17fec965c7fc5e0cb94e5bb1c35da`;
+- development: `17d0f339d3a34d4826a2d7cf337861a566a48b23d76fb1353919d9733fbcf64d`;
+- calibration: `e2e088d5fecabc8b95c29fffcf91d0248355fafc0d0cc312a0100ab7eee4e64d`;
+- sealed test: `332567068c27cd58eb7951823c3102d05cf7263abb152ffb49db4e280be0e34f`.
+
+The test was sealed before development and calibration work, opened exactly
+once only after both finalists were frozen, and is now permanently burned.
 
 ## Targeted v2 acquisition
 
@@ -141,7 +180,8 @@ make smoke-moscow-v2 TORCH_DEVICE=mps
 ```
 
 V2 final test уже открыт один раз; reproduction команды не должны повторно
-использовать его как held-out evidence. Новая tuning iteration требует v3.
+использовать его как held-out evidence. V1/V2/V3/V4 tests теперь permanently
+opened и не предназначены для tuning.
 
 ## Immutable historical v1
 
@@ -160,6 +200,7 @@ reference and OpenStreetMap attribution for the map. Details are in
 
 These data do not establish full-Moscow, district-complete, season-complete,
 heading-complete or cross-provider-complete localization. They do not authorize
-Commons/MSLS in production, make SALAD deployable, calibrate
-`uncertainty_radius_m`, or justify enabling public answers under the current
-Wilson result.
+Commons/MSLS in production, make SALAD deployable, or calibrate
+`uncertainty_radius_m`. The final product claim must report both 8.47% answer
+rate and 96.85% conditional <=100 m precision; neither number is city-wide
+accuracy.

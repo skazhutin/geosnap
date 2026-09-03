@@ -8,7 +8,12 @@ import pytest
 from ml.runtime_config import FrozenRuntimeConfig, RuntimeConfigError, sha256_file
 
 
-def _config(tmp_path: Path, *, top_k: int = 20) -> tuple[Path, Path]:
+def _config(
+    tmp_path: Path,
+    *,
+    top_k: int = 20,
+    status: str = "frozen_before_final_test",
+) -> tuple[Path, Path]:
     index = tmp_path / "index"
     index.mkdir(parents=True)
     metadata = index / "index_metadata.json"
@@ -20,11 +25,14 @@ def _config(tmp_path: Path, *, top_k: int = 20) -> tuple[Path, Path]:
         json.dumps(
             {
                 "schema_version": 1,
-                "status": "frozen_before_final_test",
+                "status": status,
                 "retriever": {"name": "megaloc"},
                 "retrieval": {"top_k": top_k},
                 "localization": {"estimator": "weighted_medoid", "confidence_threshold": 0.8},
-                "dataset": {"gallery_sha256": sha256_file(gallery)},
+                "dataset": {
+                    "gallery_manifest": str(gallery),
+                    "gallery_sha256": sha256_file(gallery),
+                },
                 "index": {
                     "directory": str(index),
                     "city_id": "moscow",
@@ -68,6 +76,10 @@ def test_frozen_config_rejects_contract_or_index_drift(tmp_path: Path) -> None:
     with pytest.raises(RuntimeConfigError, match="SHA-256"):
         config.verify_index()
 
+    gallery.write_bytes(b"changed")
+    with pytest.raises(RuntimeConfigError, match="gallery manifest SHA-256"):
+        config.verify_gallery()
+
 
 def test_frozen_config_k_contract_allows_preregistered_minimum(tmp_path: Path) -> None:
     config_path, _ = _config(tmp_path, top_k=5)
@@ -92,4 +104,21 @@ def test_frozen_config_verifies_confidence_artifact(tmp_path: Path) -> None:
 
     artifact.write_text("changed", encoding="utf-8")
     with pytest.raises(RuntimeConfigError, match="confidence model SHA-256"):
+        FrozenRuntimeConfig.load(config_path)
+
+
+def test_production_config_requires_matching_external_hash(tmp_path: Path) -> None:
+    config_path, _ = _config(
+        tmp_path,
+        status="production_selection_from_prefrozen_finalists",
+    )
+    with pytest.raises(RuntimeConfigError, match="hash file is missing"):
+        FrozenRuntimeConfig.load(config_path)
+
+    hash_path = config_path.with_suffix(".sha256")
+    hash_path.write_text(f"{sha256_file(config_path)}  {config_path.name}\n", encoding="ascii")
+    assert FrozenRuntimeConfig.load(config_path).sha256 == sha256_file(config_path)
+
+    hash_path.write_text(f"{'0' * 64}  {config_path.name}\n", encoding="ascii")
+    with pytest.raises(RuntimeConfigError, match="SHA-256 does not match"):
         FrozenRuntimeConfig.load(config_path)
