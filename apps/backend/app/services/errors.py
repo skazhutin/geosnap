@@ -34,3 +34,13 @@ class ModelNotReadyError(PublicAPIError):
 class IndexNotReadyError(PublicAPIError):
     def __init__(self) -> None:
         super().__init__(ApiStatus.INDEX_NOT_READY, "The reference index is not ready.", 503)
+
+
+class ServiceOverloadedError(PublicAPIError):
+    def __init__(self) -> None:
+        super().__init__(ApiStatus.SERVICE_OVERLOADED, "The localization service is busy.", 503)
+
+
+class LocalizationTimeoutError(PublicAPIError):
+    def __init__(self) -> None:
+        super().__init__(ApiStatus.GATEWAY_TIMEOUT, "Localization exceeded its time budget.", 504)

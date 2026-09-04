@@ -17,23 +17,32 @@ const EARTH_RADIUS_M = 6_371_008.8;
 // chunk, which is not a real file in the Vite dev server.
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
-const OSM_STYLE: StyleSpecification = {
+const DEVELOPMENT_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const DEVELOPMENT_ATTRIBUTION = "© OpenStreetMap contributors";
+const configuredTileUrl = import.meta.env.VITE_MAP_TILE_URL?.trim() || DEVELOPMENT_TILE_URL;
+const tilePublicParameter = import.meta.env.VITE_MAP_PUBLIC_PARAMETER?.trim() || "";
+const tileUrl = configuredTileUrl.replace(
+  "{token}",
+  encodeURIComponent(tilePublicParameter),
+);
+const tileAttribution = import.meta.env.VITE_MAP_ATTRIBUTION?.trim() || DEVELOPMENT_ATTRIBUTION;
+
+const MAP_STYLE: StyleSpecification = {
   version: 8,
   sources: {
-    openstreetmap: {
+    tiles: {
       type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      tiles: [tileUrl],
       tileSize: 256,
       maxzoom: 19,
-      attribution:
-        '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a>',
+      attribution: tileAttribution,
     },
   },
   layers: [
     {
-      id: "openstreetmap",
+      id: "tiles",
       type: "raster",
-      source: "openstreetmap",
+      source: "tiles",
     },
   ],
 };
@@ -88,7 +97,7 @@ export function ResultMap({ prediction }: ResultMapProps) {
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: OSM_STYLE,
+      style: MAP_STYLE,
       center: [prediction.lon, prediction.lat],
       zoom: prediction.uncertainty_radius_m ? 13 : 15,
       attributionControl: { compact: true },
@@ -147,10 +156,7 @@ export function ResultMap({ prediction }: ResultMapProps) {
         aria-label={`Карта с прогнозом ${prediction.lat.toFixed(5)}, ${prediction.lon.toFixed(5)}${radiusDescription}`}
       />
       <p className="map-credit">
-        Карта ©{" "}
-        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
-          OpenStreetMap contributors
-        </a>
+        {tileAttribution}
       </p>
     </div>
   );

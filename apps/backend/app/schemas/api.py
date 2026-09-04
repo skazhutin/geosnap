@@ -23,6 +23,9 @@ class ApiStatus(StrEnum):
     LOW_CONFIDENCE = "low_confidence"
     OUT_OF_COVERAGE = "out_of_coverage"
     INTERNAL_ERROR = "internal_error"
+    RATE_LIMITED = "rate_limited"
+    SERVICE_OVERLOADED = "service_overloaded"
+    GATEWAY_TIMEOUT = "gateway_timeout"
 
 
 class ComponentStatus(StrEnum):
@@ -47,11 +50,33 @@ class ReadyComponents(StrictModel):
     database: ComponentStatus = ComponentStatus.NOT_CONFIGURED
 
 
+class RuntimeIdentity(StrictModel):
+    retriever: str = Field(min_length=1, max_length=64)
+    source_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    checkpoint_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    checkpoint_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    index_id: str = Field(min_length=1, max_length=128)
+    faiss_index_type: Literal["IndexFlatIP"]
+    gallery_count: int = Field(gt=0)
+    descriptor_dimension: int = Field(gt=0)
+    top_k: int = Field(gt=0)
+    query_aggregation: Literal["single"]
+    geographic_aggregation: Literal["density_aware_mode_vote"]
+    coordinate_estimator: Literal["weighted_medoid"]
+    confidence_feature_count: int = Field(gt=0)
+    confidence_threshold: UnitScore
+    reranking_enabled: bool
+    approximate_tier_enabled: bool
+
+
 class ReadyResponse(StrictModel):
     status: ApiStatus
     ready: bool
     components: ReadyComponents
     request_id: str
+    version: str
+    production_config_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{12}$")
+    runtime: RuntimeIdentity | None = None
 
 
 class Prediction(StrictModel):
@@ -184,6 +209,7 @@ class Diagnostics(StrictModel):
     retrieval_ms: Milliseconds | None = None
     verification_ms: Milliseconds | None = None
     query_ms: Milliseconds | None = None
+    policy_ms: Milliseconds | None = None
     total_ms: Milliseconds | None = None
     warnings: list[str] = Field(default_factory=list, max_length=20)
 

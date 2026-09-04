@@ -104,11 +104,11 @@ describe("GeoSnap frontend", () => {
 
     expect(await screen.findByRole("heading", { name: /предсказанная точка/i })).toBeInTheDocument();
     expect(screen.getByTestId("result-map")).toHaveTextContent("55.751244,37.618423");
-    expect(screen.getByText(/91\s*%/)).toBeInTheDocument();
+    expect(screen.getByText("0.910")).toBeInTheDocument();
     expect(screen.getByText("± 85 м")).toBeInTheDocument();
     expect(screen.getByAltText(/эталонное изображение 1/i)).toHaveAttribute(
       "src",
-      "http://localhost:8000/thumbnails/ref-1",
+      "/api/thumbnails/ref-1",
     );
     expect(screen.getAllByRole("img")).toHaveLength(2);
     expect(screen.getAllByRole("link", { name: "Снимок" })[0]).toHaveAttribute(
@@ -127,7 +127,7 @@ describe("GeoSnap frontend", () => {
     expect(screen.getAllByRole("link", { name: "CC BY-SA 4.0" })).toHaveLength(2);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/localize",
+      "/api/localize",
       expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
     );
   });

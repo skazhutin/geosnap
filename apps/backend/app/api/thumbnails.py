@@ -52,5 +52,5 @@ async def reference_thumbnail(request: Request, reference_id: str) -> Response:
     return Response(
         content=output.getvalue(),
         media_type="image/jpeg",
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers={"Cache-Control": "public, max-age=86400"},
     )

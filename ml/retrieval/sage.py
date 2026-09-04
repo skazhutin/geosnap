@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -78,10 +79,27 @@ class SageVitBRetriever(OfficialTorchHubRetriever):
         )
 
     def _hub_load(self, torch: Any) -> Any:
-        try:
-            import huggingface_hub
-        except ImportError as exc:  # pragma: no cover - declared runtime dependency
-            raise ModelLoadError("huggingface-hub is required to load SAGE") from exc
+        artifact_root = os.environ.get("GEOSNAP_ARTIFACT_DIR")
+        source_value = os.environ.get("GEOSNAP_SAGE_SOURCE_DIR")
+        checkpoint_value = os.environ.get("GEOSNAP_SAGE_CHECKPOINT")
+        if artifact_root:
+            root = Path(artifact_root).expanduser()
+            source_value = source_value or str(root / "models/sage/source")
+            checkpoint_value = checkpoint_value or str(root / "models/sage/SAGE_No-Encoder_Vit-B.pth")
+        source_dir = Path(source_value).expanduser().resolve() if source_value else None
+        checkpoint_path = Path(checkpoint_value).expanduser().resolve() if checkpoint_value else None
+        if source_value and (source_dir is None or not (source_dir / "hubconf.py").is_file()):
+            raise ModelLoadError("verified local SAGE source is missing")
+        if checkpoint_value and (checkpoint_path is None or not checkpoint_path.is_file()):
+            raise ModelLoadError("verified local SAGE checkpoint is missing")
+
+        huggingface_hub: Any | None = None
+        if checkpoint_path is None:
+            try:
+                import huggingface_hub as imported_huggingface_hub
+            except ImportError as exc:  # pragma: no cover - development-only network path
+                raise ModelLoadError("huggingface-hub is required to download SAGE") from exc
+            huggingface_hub = imported_huggingface_hub
 
         with _CHECKPOINT_PATCH_LOCK:
             original_load_from_url = torch.hub.load_state_dict_from_url
@@ -99,13 +117,16 @@ class SageVitBRetriever(OfficialTorchHubRetriever):
                         map_location=map_location,
                         **kwargs,
                     )
-                path = Path(
-                    huggingface_hub.hf_hub_download(
-                        repo_id=self.checkpoint_repository,
-                        filename=self.checkpoint_filename,
-                        revision=self.checkpoint_revision,
+                path = checkpoint_path
+                if path is None:
+                    assert huggingface_hub is not None
+                    path = Path(
+                        huggingface_hub.hf_hub_download(
+                            repo_id=self.checkpoint_repository,
+                            filename=self.checkpoint_filename,
+                            revision=self.checkpoint_revision,
+                        )
                     )
-                )
                 digest = _sha256_file(path)
                 if digest != self.checkpoint_sha256:
                     raise ModelLoadError(
@@ -119,6 +140,19 @@ class SageVitBRetriever(OfficialTorchHubRetriever):
 
             torch.hub.load_state_dict_from_url = pinned_load_from_url
             try:
+                if source_dir is not None:
+                    try:
+                        return torch.hub.load(
+                            str(source_dir),
+                            self.entrypoint,
+                            source="local",
+                            trust_repo=True,
+                            **dict(self.hub_kwargs),
+                        )
+                    except Exception as exc:
+                        raise ModelLoadError(
+                            "failed to load SAGE from verified local source; no network fallback was used"
+                        ) from exc
                 return super()._hub_load(torch)
             finally:
                 torch.hub.load_state_dict_from_url = original_load_from_url

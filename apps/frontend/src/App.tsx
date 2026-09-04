@@ -45,11 +45,23 @@ const STATUS_COPY: Record<Exclude<ApiStatus, "ok">, { title: string; body: strin
   },
   out_of_coverage: {
     title: "Вне текущего покрытия",
-    body: "Фотография, вероятно, снята за пределами поддерживаемой территории Москвы.",
+    body: "Эта сцена недостаточно представлена в текущей эталонной галерее Москвы.",
   },
   internal_error: {
     title: "Не удалось выполнить локализацию",
     body: "Сервис столкнулся с внутренней ошибкой. Повторите попытку позже.",
+  },
+  rate_limited: {
+    title: "Слишком много запросов",
+    body: "Подождите немного и повторите попытку.",
+  },
+  service_overloaded: {
+    title: "Сервис занят",
+    body: "Очередь локализации заполнена. Попробуйте ещё раз через несколько секунд.",
+  },
+  gateway_timeout: {
+    title: "Превышено время ожидания",
+    body: "Локализация заняла слишком много времени. Повторите попытку позже.",
   },
 };
 
@@ -59,10 +71,7 @@ function formatBytes(bytes: number): string {
 }
 
 function formatConfidence(value: number): string {
-  return new Intl.NumberFormat("ru-RU", {
-    style: "percent",
-    maximumFractionDigits: 0,
-  }).format(value);
+  return value.toFixed(3);
 }
 
 function formatCoordinate(value: number): string {
@@ -157,9 +166,9 @@ function ResultDetails({ result }: { result: LocalizeResponse }) {
               <p className="eyebrow success-label">Гипотеза найдена</p>
               <h2>Предсказанная точка</h2>
             </div>
-            <div className="confidence" aria-label={`Уверенность ${formatConfidence(prediction.confidence)}`}>
+            <div className="confidence" aria-label={`Оценка свидетельств ${formatConfidence(prediction.confidence)}`}>
               <strong>{formatConfidence(prediction.confidence)}</strong>
-              <span>уверенность</span>
+              <span>оценка, не вероятность</span>
             </div>
           </div>
 
@@ -396,7 +405,9 @@ function App() {
                 </>
               )}
             </button>
-            <p className="form-footnote">Координаты из EXIF не используются — анализируется содержание кадра.</p>
+            <p className="form-footnote">
+              Анализируется содержание кадра, GPS из EXIF не используется. Фото по умолчанию не сохраняется постоянно; оценка может быть ошибочной.
+            </p>
           </form>
 
           {isLoading && (

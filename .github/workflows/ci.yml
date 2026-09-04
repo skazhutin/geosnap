@@ -12,7 +12,7 @@ jobs:
   test-and-smoke:
     name: test-and-smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -42,11 +42,17 @@ jobs:
 
       - name: Frontend tests (if present)
         working-directory: apps/frontend
-        run: npm test --if-present
+        run: npm test --if-present -- --run
 
       - name: Frontend build
         working-directory: apps/frontend
-        run: npm run build
+        env:
+          VITE_API_BASE_URL: /api
+          VITE_MAP_TILE_URL: https://tiles.example.invalid/{z}/{x}/{y}.png
+          VITE_MAP_ATTRIBUTION: CI configuration only
+        run: |
+          npm run build
+          ! grep -R -E 'localhost:(3000|8000)' dist
 
       - name: Install Python dependencies
         run: |
@@ -58,6 +64,22 @@ jobs:
 
       - name: Python tests
         run: .venv/bin/pytest -q
+
+      - name: Production config and artifact-manifest schema
+        run: |
+          test "$(sha256sum configs/moscow_production_frozen.json | cut -d ' ' -f1)" = "9c0c38f93d4c4f76eff8ef821508da0aafdd104f04ddd932b48d2834bbd2984e"
+          .venv/bin/python -c "from ml.artifacts import load_artifact_manifest; manifest=load_artifact_manifest('configs/production_artifacts.json'); assert manifest.version == '1'"
+
+      - name: Production Compose validation
+        run: make production-config
+
+      - name: Production container builds
+        run: |
+          docker build --platform linux/amd64 -t geosnap-backend:ci -f apps/backend/Dockerfile .
+          docker build --platform linux/amd64 -t geosnap-telegram-bot:ci -f apps/telegram_bot/Dockerfile .
+          docker build --build-arg VITE_API_BASE_URL=/api --build-arg 'VITE_MAP_TILE_URL=https://tiles.example.invalid/{z}/{x}/{y}.png' --build-arg 'VITE_MAP_ATTRIBUTION=CI configuration only' -t geosnap-proxy:ci -f infra/caddy/Dockerfile .
+          docker run --rm --platform linux/amd64 geosnap-telegram-bot:ci python -m apps.telegram_bot --validate-config
+          docker run --rm --platform linux/amd64 geosnap-telegram-bot:ci python -c "import importlib.util; assert importlib.util.find_spec('torch') is None; assert importlib.util.find_spec('faiss') is None"
 
       - name: Functional image-to-API smoke
         run: .venv/bin/pytest -q apps/backend/tests/test_api.py::test_api_runs_real_fixture_embedding_index_localization_and_thumbnail

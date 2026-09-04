@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -163,6 +165,33 @@ def make_settings(**overrides: Any) -> Settings:
     return Settings(**values)
 
 
+def artifact_manifest(path: Path, *, payload: bytes = b"valid") -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "manifest_id": "startup-failure-test",
+                "version": "1",
+                "artifacts": [
+                    {
+                        "artifact_id": "required-fixture",
+                        "version": "1",
+                        "source_url": "https://example.invalid/fixture",
+                        "source_type": "file",
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "size_bytes": len(payload),
+                        "destination": "fixture.bin",
+                        "required": True,
+                        "provenance": "test",
+                        "description": "test",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def success_result() -> ServiceResult:
     return ServiceResult(
         status="ok",
@@ -280,6 +309,17 @@ def test_cors_preflight_allows_only_configured_frontend_origin() -> None:
     assert "access-control-allow-origin" not in denied.headers
 
 
+def test_production_disables_interactive_api_documentation() -> None:
+    app = create_app(
+        settings=make_settings(environment="production", artifact_manifest="required-at-runtime.json"),
+        service_factory=FakeService,
+    )
+
+    assert app.docs_url is None
+    assert app.redoc_url is None
+    assert app.openapi_url is None
+
+
 def test_health_survives_localization_startup_failure() -> None:
     def broken_factory():
         raise RuntimeError("missing model at /private/model.bin")
@@ -294,6 +334,40 @@ def test_health_survives_localization_startup_failure() -> None:
     assert ready_response.status_code == 503
     assert ready_response.json()["status"] == "model_not_ready"
     assert "/private/model.bin" not in ready_response.content.decode()
+
+
+@pytest.mark.parametrize("condition", ["missing", "corrupt"])
+def test_production_artifact_failure_keeps_process_alive_but_unready(
+    condition: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    artifact_manifest(manifest)
+    if condition == "corrupt":
+        (artifacts / "fixture.bin").write_bytes(b"bad!!")
+    monkeypatch.setenv("GEOSNAP_ARTIFACT_DIR", str(artifacts))
+    factory_called = False
+
+    def factory() -> FakeService:
+        nonlocal factory_called
+        factory_called = True
+        return FakeService()
+
+    app = create_app(
+        settings=make_settings(environment="production", artifact_manifest=str(manifest)),
+        service_factory=factory,
+    )
+    with ASGITestClient(app) as client:
+        health_response = client.get("/health")
+        ready_response = client.get("/ready")
+
+    assert health_response.status_code == 200
+    assert ready_response.status_code == 503
+    assert ready_response.json()["ready"] is False
+    assert factory_called is False
 
 
 def test_ready_reports_all_required_components() -> None:
@@ -362,7 +436,7 @@ def test_thumbnail_route_serves_bounded_jpeg_without_storage_path() -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/jpeg"
-    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert response.headers["cache-control"] == "public, max-age=86400"
     assert response.content.startswith(b"\xff\xd8\xff")
     assert missing.status_code == 404
 
@@ -391,6 +465,41 @@ def test_localize_corrupt_file_without_an_image_signature() -> None:
     assert fake.localize_calls == 0
 
 
+def test_localize_rejects_empty_image_field() -> None:
+    fake = FakeService()
+    app = create_app(settings=make_settings(), service_factory=lambda: fake)
+    body, headers = multipart(b"")
+    with ASGITestClient(app) as client:
+        response = client.post("/localize", body=body, headers=headers)
+
+    assert response.status_code == 422
+    assert response.json()["status"] == "invalid_image"
+    assert fake.localize_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("format_name", "content_type", "filename"),
+    (("PNG", "image/png", "query.png"), ("WEBP", "image/webp", "query.webp")),
+)
+def test_localize_accepts_supported_png_and_webp(
+    format_name: str,
+    content_type: str,
+    filename: str,
+) -> None:
+    fake = FakeService()
+    app = create_app(settings=make_settings(), service_factory=lambda: fake)
+    body, headers = multipart(
+        encoded_image(format_name),
+        content_type=content_type,
+        filename=filename,
+    )
+    with ASGITestClient(app) as client:
+        response = client.post("/localize", body=body, headers=headers)
+
+    assert response.status_code == 200
+    assert fake.localize_calls == 1
+
+
 def test_localize_unsupported_format() -> None:
     fake = FakeService()
     app = create_app(settings=make_settings(), service_factory=lambda: fake)
@@ -413,6 +522,21 @@ def test_localize_rejects_oversized_upload_before_decode() -> None:
         service_factory=lambda: fake,
     )
     body, headers = multipart(encoded_image())
+    with ASGITestClient(app) as client:
+        response = client.post("/localize", body=body, headers=headers)
+
+    assert response.status_code == 413
+    assert response.json()["status"] == "image_too_large"
+    assert fake.localize_calls == 0
+
+
+def test_localize_rejects_excessive_decoded_dimensions() -> None:
+    fake = FakeService()
+    app = create_app(
+        settings=make_settings(max_image_dimension=2000, max_image_pixels=2_000_000),
+        service_factory=lambda: fake,
+    )
+    body, headers = multipart(encoded_image(size=(2001, 64)))
     with ASGITestClient(app) as client:
         response = client.post("/localize", body=body, headers=headers)
 
@@ -602,6 +726,76 @@ def test_upload_decode_is_inside_concurrency_bound(monkeypatch) -> None:
 
     assert all(response.status_code == 200 for response in responses)
     assert maximum_active == 1
+
+
+def test_rate_limit_returns_429_and_retry_after() -> None:
+    app = create_app(
+        settings=make_settings(
+            localization_rate_per_minute=0.01,
+            localization_rate_burst=1,
+        ),
+        service_factory=FakeService,
+    )
+    body, headers = multipart(encoded_image())
+    with ASGITestClient(app) as client:
+        first = client.post("/localize", body=body, headers=headers)
+        second = client.post("/localize", body=body, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["status"] == "rate_limited"
+    assert int(second.headers["retry-after"]) >= 1
+
+
+def test_full_localization_queue_fails_closed(monkeypatch) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_read(_request, _settings):
+        from app.services.image_validation import UploadedPart
+
+        entered.set()
+        await release.wait()
+        return UploadedPart(encoded_image(), "image/jpeg", "query.jpg")
+
+    monkeypatch.setattr("app.api.localize.read_image_part", blocked_read)
+    app = create_app(
+        settings=make_settings(localization_concurrency=1, localization_queue_limit=0),
+        service_factory=FakeService,
+    )
+    with ASGITestClient(app) as client:
+        async def exercise():
+            first_task = asyncio.create_task(client._request("POST", "/localize", body=b"", headers={}))
+            await entered.wait()
+            overloaded = await client._request("POST", "/localize", body=b"", headers={})
+            release.set()
+            first = await first_task
+            return first, overloaded
+
+        first, overloaded = client.runner.run(exercise())
+
+    assert first.status_code == 200
+    assert overloaded.status_code == 503
+    assert overloaded.json()["status"] == "service_overloaded"
+
+
+def test_metrics_are_prometheus_compatible_and_do_not_label_request_ids() -> None:
+    app = create_app(settings=make_settings(), service_factory=FakeService)
+    body, headers = multipart(encoded_image())
+    with ASGITestClient(app) as client:
+        localized = client.post(
+            "/localize",
+            body=body,
+            headers=headers | {"x-request-id": "unique-request-id"},
+        )
+        metrics = client.get("/metrics")
+
+    assert localized.status_code == 200
+    assert metrics.status_code == 200
+    text = metrics.content.decode()
+    assert "geosnap_localization_requests_total" in text
+    assert "geosnap_embedding_duration_seconds" in text
+    assert "unique-request-id" not in text
 
 
 def test_invalid_boolean_environment_is_rejected(monkeypatch) -> None:

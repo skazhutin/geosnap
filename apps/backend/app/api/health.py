@@ -6,9 +6,11 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST
+from starlette.responses import Response
 
 from app.schemas import ApiStatus, HealthResponse, ReadyResponse
-from app.schemas.api import ComponentStatus, ReadyComponents
+from app.schemas.api import ComponentStatus, ReadyComponents, RuntimeIdentity
 from app.services.localization import (
     LocalizationService,
     ServiceReadiness,
@@ -69,6 +71,16 @@ async def ready(
         status = ApiStatus.INTERNAL_ERROR
     else:
         status = ApiStatus.OK
+    request.app.state.metrics.backend_ready.set(1.0 if status is ApiStatus.OK else 0.0)
+
+    runtime_identity = None
+    if status is ApiStatus.OK:
+        identity = getattr(service, "runtime_identity", None)
+        if identity is not None:
+            try:
+                runtime_identity = RuntimeIdentity.model_validate(await _call(identity))
+            except Exception:
+                runtime_identity = None
 
     response = ReadyResponse(
         status=status,
@@ -80,7 +92,23 @@ async def ready(
             database=database_status,
         ),
         request_id=request.state.request_id,
+        version=request.app.state.settings.app_version,
+        production_config_sha256=(
+            str(getattr(service, "production_config_sha256", ""))[:12] or None
+        ),
+        runtime=runtime_identity,
     )
     if response.ready:
         return response
     return JSONResponse(status_code=503, content=response.model_dump(mode="json"))
+
+
+@router.get("/metrics", include_in_schema=False)
+async def metrics(request: Request) -> Response:
+    if not request.app.state.settings.metrics_enabled:
+        return Response(status_code=404)
+    return Response(
+        content=request.app.state.metrics.render(),
+        media_type=CONTENT_TYPE_LATEST,
+        headers={"Cache-Control": "no-store"},
+    )

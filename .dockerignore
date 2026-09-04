@@ -9,11 +9,9 @@ __pycache__
 .env
 apps/frontend/node_modules
 apps/frontend/dist
-data/raw
-data/processed
-data/embeddings
-data/indexes
-data/evaluation/generated
+data
+docs
+.playwright-cli
 *.log
 *.faiss
 *.npy

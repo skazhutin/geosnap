@@ -6,13 +6,15 @@ import argparse
 import json
 import os
 import resource
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from PIL import Image
 
-from ml.ingestion.schema import read_manifest
+from ml.artifacts import validate_production_artifacts
+from ml.localization.confidence_model import ConfidenceModel
 from ml.localization.service import create_localization_service
 from ml.runtime_config import FrozenRuntimeConfig, RuntimeConfigError, sha256_file
 
@@ -44,10 +46,9 @@ def _verify_hash(path: Path, expected: str, label: str) -> None:
 
 
 def verify_artifacts(config: FrozenRuntimeConfig) -> dict[str, Any]:
-    root = config.path.parent.parent
     payload = config.payload
     dataset = payload["dataset"]
-    gallery = root / str(dataset["gallery_manifest"])
+    gallery = config.gallery_manifest_path
     _verify_hash(gallery, str(dataset["gallery_sha256"]), "gallery manifest")
 
     index = payload["index"]
@@ -60,31 +61,18 @@ def verify_artifacts(config: FrozenRuntimeConfig) -> dict[str, Any]:
     ):
         _verify_hash(index_dir / filename, str(index[key]), f"index {filename}")
 
-    embedding = payload["embedding"]
-    embedding_dir = root / str(embedding["directory"])
-    for filename, key in (
-        ("build_metadata.json", "build_metadata_sha256"),
-        ("descriptors.npy", "descriptors_sha256"),
-        ("id_mapping.json", "id_mapping_sha256"),
-        ("reference_metadata.jsonl", "reference_metadata_sha256"),
-    ):
-        _verify_hash(
-            embedding_dir / filename,
-            str(embedding[key]),
-            f"embedding {filename}",
-        )
-
-    final = payload["final_evaluation"]
-    for key, hash_key in (
-        ("comparison", "comparison_sha256"),
-        ("selected_report", "selected_report_sha256"),
-        ("receipt", "receipt_sha256"),
-    ):
-        _verify_hash(root / str(final[key]), str(final[hash_key]), key)
+    confidence_path = config.confidence_model_path
+    if confidence_path is None:
+        raise RuntimeConfigError("production confidence artifact is not configured")
+    confidence = json.loads(confidence_path.read_text(encoding="utf-8"))
+    model = ConfidenceModel.from_dict(confidence)
+    if len(model.feature_names) != 14:
+        raise RuntimeConfigError("production confidence feature schema is not the frozen 14-feature schema")
     return {
         "gallery_count": int(index["gallery_size"]),
         "descriptor_dimension": int(payload["retriever"]["descriptor_dimension"]),
         "index_size_bytes": (index_dir / "index.faiss").stat().st_size,
+        "confidence_feature_count": len(model.feature_names),
     }
 
 
@@ -101,6 +89,15 @@ def _smoke_image(root: Path, case: dict[str, Any]) -> Image.Image:
         )
     if kind != "manifest_image":
         raise RuntimeConfigError(f"unsupported production smoke kind: {kind}")
+    artifact_root = os.environ.get("GEOSNAP_ARTIFACT_DIR")
+    if artifact_root:
+        smoke_path = Path(artifact_root) / "smoke" / f"{case['query_id']}.jpg"
+        if not smoke_path.is_file():
+            raise RuntimeConfigError(f"production smoke image is missing: {case['query_id']}")
+        with Image.open(smoke_path) as source:
+            return source.convert("RGB")
+    from ml.ingestion.schema import read_manifest
+
     manifest = read_manifest(root / str(case["manifest"]), allow_empty=False)
     selected = manifest.loc[manifest["id"].astype(str) == str(case["query_id"])]
     if len(selected) != 1:
@@ -164,6 +161,12 @@ def _run_smoke_set(
 def run(config_path: Path) -> dict[str, Any]:
     config = FrozenRuntimeConfig.load(config_path, verify_index=True)
     artifacts = verify_artifacts(config)
+    artifact_manifest = os.environ.get("GEOSNAP_ARTIFACT_MANIFEST")
+    distribution = (
+        validate_production_artifacts(artifact_manifest)
+        if artifact_manifest
+        else {"status": "not_configured_for_local_research_tree"}
+    )
     root = config.path.parent.parent
     smoke = dict(config.payload.get("runtime_smoke", {}))
     smoke_path = root / str(smoke.get("manifest", "configs/moscow_production_smoke_set.json"))
@@ -189,10 +192,17 @@ def run(config_path: Path) -> dict[str, Any]:
         "configuration": str(config.path),
         "configuration_sha256": config.sha256,
         "artifacts": artifacts,
+        "artifact_distribution": distribution,
         "readiness": readiness,
         "model_and_index_load_ms": load_ms,
+        "model_load_ms": service.model_load_ms,
+        "index_load_ms": service.index_load_ms,
         "smoke": smoke_results,
-        "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
+        "peak_rss_bytes": (
+            int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+            if sys.platform.startswith("linux")
+            else int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        ),
     }
 
 

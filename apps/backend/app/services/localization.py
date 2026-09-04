@@ -55,6 +55,7 @@ class ServiceDiagnostics:
     retrieval_ms: float | None = None
     verification_ms: float | None = None
     query_ms: float | None = None
+    policy_ms: float | None = None
     warnings: tuple[str, ...] = ()
 
 
@@ -159,6 +160,7 @@ def coerce_result(value: ServiceResult | Mapping[str, Any] | Any) -> ServiceResu
         retrieval_ms=_optional_float(diagnostics_map.get("retrieval_ms")),
         verification_ms=_optional_float(diagnostics_map.get("verification_ms")),
         query_ms=_optional_float(diagnostics_map.get("query_ms")),
+        policy_ms=_optional_float(diagnostics_map.get("policy_ms")),
         warnings=tuple(str(item) for item in diagnostics_map.get("warnings", ())),
     )
     return ServiceResult(

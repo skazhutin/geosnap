@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -13,11 +14,15 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.api.health import get_localization_service
+from app.capacity import CapacityUnavailable
 from app.schemas import ApiStatus, Diagnostics, LocalizeResponse
 from app.services.errors import (
     IndexNotReadyError,
+    InvalidImageError,
+    LocalizationTimeoutError,
     ModelNotReadyError,
     PublicAPIError,
+    ServiceOverloadedError,
 )
 from app.services.image_validation import prepare_image, read_image_part
 from app.services.localization import (
@@ -39,7 +44,9 @@ _SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$")
 _SAFE_WARNING = re.compile(r"^[a-z0-9][a-z0-9_:-]{0,63}$")
 _PUBLIC_MESSAGES = {
     ApiStatus.LOW_CONFIDENCE: "The image could not be localized with sufficient confidence.",
-    ApiStatus.OUT_OF_COVERAGE: "The image appears to be outside the current coverage area.",
+    ApiStatus.OUT_OF_COVERAGE: (
+        "The scene is not sufficiently represented by the current Moscow reference coverage."
+    ),
 }
 
 
@@ -93,16 +100,34 @@ async def localize(
         if not readiness.index_loaded or not readiness.metadata_available:
             raise IndexNotReadyError()
 
-        async with request.app.state.localization_semaphore:
+        try:
+            lease = await request.app.state.localization_capacity.acquire()
+        except CapacityUnavailable as exc:
+            raise ServiceOverloadedError() from exc
+        async with lease:
             # Bound buffering and decode as well as model inference. Otherwise
             # concurrent maximum-size bodies can exhaust memory before reaching
             # the inference-only semaphore.
             stage = "upload"
-            upload = await read_image_part(request, request.app.state.settings)
+            try:
+                upload = await asyncio.wait_for(
+                    read_image_part(request, request.app.state.settings),
+                    timeout=request.app.state.settings.upload_timeout_seconds,
+                )
+            except TimeoutError as exc:
+                raise InvalidImageError("The upload timed out.") from exc
             stage = "preprocess"
             prepared = await run_in_threadpool(prepare_image, upload, request.app.state.settings)
             stage = "inference"
-            raw_result = await _call(service.localize, prepared)
+            inference_task = asyncio.create_task(_call(service.localize, prepared))
+            try:
+                raw_result = await asyncio.wait_for(
+                    asyncio.shield(inference_task),
+                    timeout=request.app.state.settings.localization_timeout_seconds,
+                )
+            except TimeoutError as exc:
+                lease.defer_until(inference_task)
+                raise LocalizationTimeoutError() from exc
         stage = "response_contract"
         result = coerce_result(raw_result)
         try:
@@ -128,6 +153,7 @@ async def localize(
             retrieval_ms=result.diagnostics.retrieval_ms,
             verification_ms=result.diagnostics.verification_ms,
             query_ms=result.diagnostics.query_ms,
+            policy_ms=result.diagnostics.policy_ms,
             total_ms=(perf_counter() - started) * 1000.0,
             warnings=[warning for warning in result.diagnostics.warnings if _SAFE_WARNING.fullmatch(warning)],
         )
@@ -172,13 +198,39 @@ async def localize(
                     "retrieval_ms": result.diagnostics.retrieval_ms,
                     "verification_ms": result.diagnostics.verification_ms,
                     "query_ms": result.diagnostics.query_ms,
+                    "policy_ms": result.diagnostics.policy_ms,
                     "total_ms": round(payload.diagnostics.total_ms or 0.0, 3),
                 },
                 separators=(",", ":"),
-            )
+            ),
+            extra={
+                "event": "localization_complete",
+                "request_id": request.state.request_id,
+                "localization_status": payload.status.value,
+                "preprocess_ms": round(prepared.diagnostics.preprocess_ms, 3),
+                "embedding_ms": result.diagnostics.embedding_ms,
+                "retrieval_ms": result.diagnostics.retrieval_ms,
+                "policy_ms": result.diagnostics.policy_ms,
+                "duration_ms": round(payload.diagnostics.total_ms or 0.0, 3),
+            },
         )
+        metrics = request.app.state.metrics
+        metrics.localization_requests.labels(status=payload.status.value).inc()
+        if result.diagnostics.embedding_ms is not None:
+            metrics.embedding_latency.observe(result.diagnostics.embedding_ms / 1000.0)
+        if result.diagnostics.retrieval_ms is not None:
+            metrics.retrieval_latency.observe(result.diagnostics.retrieval_ms / 1000.0)
+        if result.diagnostics.policy_ms is not None:
+            metrics.policy_latency.observe(result.diagnostics.policy_ms / 1000.0)
         return payload
     except PublicAPIError as exc:
+        request.app.state.metrics.localization_requests.labels(status=exc.status.value).inc()
+        if exc.status in {
+            ApiStatus.INVALID_IMAGE,
+            ApiStatus.UNSUPPORTED_FORMAT,
+            ApiStatus.IMAGE_TOO_LARGE,
+        }:
+            request.app.state.metrics.invalid_uploads.labels(category=exc.status.value).inc()
         return error_response(
             request,
             exc.status,

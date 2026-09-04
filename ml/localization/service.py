@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -27,6 +28,7 @@ from .estimators import CoordinateEstimator
 from .pipeline import LocalizerConfig, SpatialLocalizer
 
 logger = logging.getLogger(__name__)
+_THUMBNAIL_FILE = re.compile(r"^images/[0-9a-f]{64}\.webp$")
 
 
 class LocalizationServiceError(RuntimeError):
@@ -100,15 +102,21 @@ class LocalizationService:
         )
         self.index: FaissExactIndex | FaissIndexWorker | None = None
         self._metadata_by_reference_id: dict[str, Mapping[str, Any]] = {}
+        self._thumbnail_by_reference_id: dict[str, Path] = {}
+        self.index_load_ms: float | None = None
+        self.model_load_ms: float | None = None
+        self.production_config_sha256: str | None = None
 
     def load(self) -> LocalizationService:
         """Load the official checkpoint and persisted index once."""
 
         index: FaissExactIndex | FaissIndexWorker
+        index_started = perf_counter()
         if self.process_isolate_faiss:
             index = FaissIndexWorker(self.index_dir).start()
         else:
             index = FaissExactIndex.load(self.index_dir)
+        self.index_load_ms = _elapsed_ms(index_started)
         try:
             indexed_city = index.build_metadata.get("city_id")
             if self.expected_city_id and indexed_city != self.expected_city_id:
@@ -150,7 +158,9 @@ class LocalizationService:
                     "index retriever identity is incompatible with the configured adapter: "
                     + ", ".join(mismatched)
                 )
+            model_started = perf_counter()
             self.retriever.load()
+            self.model_load_ms = _elapsed_ms(model_started)
         except Exception:
             if isinstance(index, FaissIndexWorker):
                 index.close()
@@ -164,6 +174,7 @@ class LocalizationService:
                 strict=True,
             )
         }
+        self._load_thumbnail_manifest()
         return self
 
     def close(self) -> None:
@@ -172,12 +183,86 @@ class LocalizationService:
         index = self.index
         self.index = None
         self._metadata_by_reference_id = {}
+        self._thumbnail_by_reference_id = {}
         if isinstance(index, FaissIndexWorker):
             index.close()
         self.retriever.close()
 
-    @staticmethod
-    def _thumbnail_path(metadata: Mapping[str, Any]) -> Path | None:
+    def runtime_identity(self) -> dict[str, Any]:
+        """Return non-secret loaded-runtime identity for readiness verification."""
+
+        if self.index is None:
+            raise LocalizationServiceError("index is not loaded")
+        confidence_model = getattr(self.localizer, "confidence_model", None)
+        policy = getattr(self.localizer, "policy", None)
+        feature_names = getattr(confidence_model, "feature_names", ())
+        return {
+            "retriever": self.retriever.model_name,
+            "source_revision": str(getattr(self.retriever, "revision", "")),
+            "checkpoint_revision": str(
+                getattr(self.retriever, "checkpoint_revision", "")
+            ),
+            "checkpoint_sha256": str(
+                getattr(self.retriever, "checkpoint_sha256", "")
+            ),
+            "index_id": str(self.expected_index_id or ""),
+            "faiss_index_type": str(
+                self.index.build_metadata.get("faiss_index_type", "")
+            ),
+            "gallery_count": int(self.index.size),
+            "descriptor_dimension": int(self.index.descriptor_dim),
+            "top_k": int(self.top_k),
+            "query_aggregation": self.query_aggregation,
+            "geographic_aggregation": str(getattr(policy, "aggregation", "")),
+            "coordinate_estimator": "weighted_medoid",
+            "confidence_feature_count": len(feature_names),
+            "confidence_threshold": float(
+                getattr(policy, "confidence_threshold", float("nan"))
+            ),
+            "reranking_enabled": self.geometric_reranker is not None,
+            "approximate_tier_enabled": False,
+        }
+
+    def _load_thumbnail_manifest(self) -> None:
+        root_value = os.environ.get("GEOSNAP_THUMBNAIL_DIR")
+        if not root_value:
+            artifact_root = os.environ.get("GEOSNAP_ARTIFACT_DIR")
+            root_value = str(Path(artifact_root) / "thumbnails") if artifact_root else None
+        if not root_value:
+            return
+        root = Path(root_value).expanduser().resolve()
+        manifest_path = root / "manifest.json"
+        if not manifest_path.is_file():
+            logger.warning("production thumbnail manifest is unavailable")
+            return
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            references = payload["references"]
+            if payload.get("schema_version") != 1 or not isinstance(references, dict):
+                raise ValueError("invalid thumbnail manifest schema")
+            if int(payload.get("reference_count", -1)) != len(references):
+                raise ValueError("thumbnail manifest count mismatch")
+            mapping: dict[str, Path] = {}
+            for reference_id, relative_value in references.items():
+                relative = str(relative_value)
+                if reference_id not in self._metadata_by_reference_id or not _THUMBNAIL_FILE.fullmatch(relative):
+                    raise ValueError("thumbnail manifest contains an unknown or unsafe entry")
+                path = (root / relative).resolve()
+                if root not in path.parents or not path.is_file():
+                    raise ValueError("thumbnail manifest points to a missing file")
+                mapping[str(reference_id)] = path
+            self._thumbnail_by_reference_id = mapping
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("production thumbnail manifest failed validation")
+            self._thumbnail_by_reference_id = {}
+
+    def _thumbnail_path(self, metadata: Mapping[str, Any]) -> Path | None:
+        reference_id = str(metadata.get("id") or "")
+        production_path = self._thumbnail_by_reference_id.get(reference_id)
+        if production_path is not None:
+            return production_path
+        if os.environ.get("GEOSNAP_ARTIFACT_DIR"):
+            return None
         for key in ("thumbnail_path", "thumb_path", "image_path"):
             raw_path = metadata.get(key)
             if raw_path is None or not str(raw_path).strip():
@@ -204,7 +289,8 @@ class LocalizationService:
         metadata = self._metadata_by_reference_id.get(reference_id)
         if metadata is None:
             return None
-        path = self._thumbnail_path(metadata)
+        production_path = self._thumbnail_by_reference_id.get(reference_id)
+        path = production_path or self._thumbnail_path(metadata)
         if path is None:
             return None
         try:
@@ -362,10 +448,12 @@ class LocalizationService:
                         for candidate in reranked.candidates
                     ]
 
+        policy_started = perf_counter()
         result = self.localizer.localize(
             localization_matches,
             query_quality=self._query_quality(query),
         )
+        policy_ms = _elapsed_ms(policy_started)
         prediction = None
         if result.lat is not None and result.lon is not None:
             prediction = {
@@ -411,6 +499,7 @@ class LocalizationService:
                 "retrieval_ms": retrieval_ms,
                 "verification_ms": verification_ms,
                 "query_ms": _elapsed_ms(query_started),
+                "policy_ms": policy_ms,
                 "warnings": warnings,
             }
         )
@@ -631,7 +720,7 @@ def create_localization_service() -> LocalizationService:
                 score_temperature=score_temperature,
             )
         )
-    return LocalizationService(
+    service = LocalizationService(
         retriever,
         index_dir,
         localizer=localizer,
@@ -642,3 +731,5 @@ def create_localization_service() -> LocalizationService:
         geometric_reranker=geometric_reranker,
         query_aggregation=query_aggregation,
     )
+    service.production_config_sha256 = None if frozen is None else frozen.sha256
+    return service

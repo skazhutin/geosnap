@@ -1,0 +1,54 @@
+{
+	servers {
+		timeouts {
+			read_body 20s
+			read_header 10s
+			idle 60s
+		}
+	}
+}
+
+{$GEOSNAP_SCHEME:http}://{$GEOSNAP_DOMAIN:localhost} {
+	encode zstd gzip
+
+	request_body {
+		max_size {$PROXY_MAX_REQUEST_BYTES:16000000}
+	}
+
+	handle /api/metrics {
+		respond 404
+	}
+
+	handle_path /api/* {
+		reverse_proxy backend:8000 {
+			header_up X-Forwarded-For {remote_host}
+			transport http {
+				dial_timeout 3s
+				response_header_timeout {$PROXY_BACKEND_TIMEOUT:35s}
+			}
+		}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	@html path / /index.html
+	header @html Cache-Control "no-cache, no-store, must-revalidate"
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: {$GEOSNAP_TILE_ORIGIN}; connect-src 'self' {$GEOSNAP_TILE_ORIGIN}; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		-Server
+	}
+
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}

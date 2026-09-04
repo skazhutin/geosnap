@@ -8,6 +8,9 @@ export const API_STATUSES = [
   "low_confidence",
   "out_of_coverage",
   "internal_error",
+  "rate_limited",
+  "service_overloaded",
+  "gateway_timeout",
 ] as const;
 
 export type ApiStatus = (typeof API_STATUSES)[number];

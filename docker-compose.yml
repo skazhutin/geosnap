@@ -19,6 +19,7 @@ services:
       retries: 10
 
   backend:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: apps/backend/Dockerfile

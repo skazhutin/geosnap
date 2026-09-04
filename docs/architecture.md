@@ -1,229 +1,79 @@
-# Архитектура GeoSnap
+# GeoSnap architecture
 
-Актуально на 2026-09-03. Этот документ описывает реализованную архитектуру и
-границы данных, а не обещанную точность продукта. Production gallery имеет
-реальные Mapillary/KartaView references, но измеренное покрытие остаётся
-частичным. Final production selection — SAGE ViT-B, exact `IndexFlatIP`, K=30,
-single query, density-aware geographic mode voting, sequence-deduplicated
-support, weighted medoid, verification off и Part 2.5 logistic score threshold
-`0.9349250249145314`. Результаты и ограничения — в
-[final_localization_core.md](final_localization_core.md).
+GeoSnap is one visual-localization platform with two clients. FastAPI is the only localization authority; the website and Telegram bot cannot select or implement a model policy independently.
 
-## Граница production данных
+```text
+Browser
+   |
+   v
+Caddy reverse proxy (TLS, limits, headers, compression)
+   |                         external raster tile provider
+   +---- / -> built frontend -----------------------^
+   |
+   +---- /api/* -> FastAPI (one CPU process)
+                         |
+                         +---- frozen SAGE ViT-B
+                         +---- exact FAISS IndexFlatIP
+                         +---- frozen geographic/confidence policy
+                         +---- read-only artifact volume
+                         +---- internal Prometheus metrics
 
-Единственный допустимый вход в deployable Moscow reference gallery —
-физически сохранённые изображения Mapillary и KartaView. Перед cleaning
-применяется exact OSM administrative AOI: relation `102269`, `MultiPolygon` из
-10 компонентов, SHA-256
-`33b5dbf852cb94e5292e7848974fba78641dd76339cad142e73b7419b5db4a8a`.
-
-V2 exact-AOI source manifest содержит 23 654 references (17 143 Mapillary,
-6 511 KartaView); frozen v4 leakage-resistant gallery/index содержит 20 487
-(14 099 / 6 388). В fixed 20×20 grid заняты 93 cells, только 30 dense-healthy,
-поэтому `city_id=moscow` обозначает область данных, а не гарантию локализации в
-любой точке города.
-
-MSLS, Wikimedia Commons и любые другие benchmark/training datasets разрешены
-только в research/evaluation workflow. Они не могут быть объединены с
-canonical manifest, embedded в production descriptors или добавлены в Moscow
-FAISS index.
-
-## Принцип
-
-GeoSnap — модульный монолит с retrieval-based локализацией. Нейросеть не
-регрессирует широту и долготу напрямую: она строит глобальный визуальный
-дескриптор, а координата получается только из геопривязанных записей галереи.
-`moscow` — значение данных `city_id`, а не условие внутри общего алгоритма.
-
-```mermaid
-flowchart LR
-    subgraph Offline["Офлайн: построение галереи"]
-        Sources["Mapillary / KartaView"] --> Normalize["Нормализация и canonical manifest"]
-        Normalize --> Download["Возобновляемая загрузка изображений"]
-        Download --> Clean["Валидация → quality score → dedup → H3"]
-        Clean --> Embed["Pinned VPR retriever (current: SAGE)"]
-        Embed --> Index["L2 descriptors + FAISS IndexFlatIP + ID sidecars"]
-    end
-
-    subgraph Online["Онлайн: один запрос"]
-        Upload["multipart upload"] --> Validate["MIME/signature/decode/EXIF/RGB/limits"]
-        Validate --> Query["Глобальный descriptor"]
-        Query --> Search["Exact top-K retrieval"]
-        Search --> Verify["Опциональная top-N geometry"]
-        Verify --> Cluster["Компактные географические гипотезы"]
-        Cluster --> Estimate["Weighted medoid + confidence/status"]
-        Estimate --> API["Typed FastAPI response"]
-    end
-
-    Index --> Search
+Telegram user -> Telegram Bot API -> bot container
+                                          |
+                                          +---- internal FastAPI /localize
 ```
 
-## Границы модулей
+## Runtime components
 
-| Область | Реализация | Ответственность и граница |
-|---|---|---|
-| Ingestion | [`ml/ingestion`](../ml/ingestion) | Сетевые API, bbox/grid, пагинация, checkpoint/retry, нормализация источников, скачивание. Не загружает ML-модель. |
-| Cleaning | [`ml/cleaning`](../ml/cleaning) | Консервативная проверка файлов и координат, quality score, exact/perceptual dedup, финальный Parquet и отчёты. Не обслуживает HTTP. |
-| Геообогащение | [`ml/enrichment`](../ml/enrichment) | H3-поля для анализа, бакетизации и будущего шардирования. H3 не является обязательным онлайн-префильтром. |
-| Retrieval | [`ml/retrieval`](../ml/retrieval) | Общий `BaseRetriever`, официальные checkpoint-backed адаптеры, пакетные и возобновляемые embedding jobs. Ошибка загрузки весов не заменяется случайной моделью. |
-| Indexing | [`ml/indexing`](../ml/indexing) | Нормализованный exact `faiss.IndexFlatIP`, явное отображение row → stable reference ID, сохранение и проверка sidecar-метаданных. На macOS FAISS может исполняться в отдельном процессе. |
-| Verification | [`ml/verification`](../ml/verification) | Ограниченная top-N локальная геометрия и rerank. По умолчанию выключена; подробности и измерения — в [отчёте о verification](verification_report.md). |
-| Localization | [`ml/localization`](../ml/localization) | Пространственная группировка, выбор одной моды, оценка координаты, интерпретируемая уверенность и статусы `ok`/`low_confidence`/`out_of_coverage`. Не зависит от FastAPI. |
-| Backend | [`apps/backend/app`](../apps/backend/app) | HTTP trust boundary, lifecycle, типизированные схемы, ограничения upload, readiness, безопасные ошибки и thumbnail по непрозрачному ID. ML загружается один раз в lifespan. |
-| Frontend | [`apps/frontend`](../apps/frontend) | Минимальный клиент: upload, состояния результата, карта, гипотезы, совпадения и атрибуция. Не содержит логики локализации. |
+| Component | Responsibility | State/dependencies |
+| --- | --- | --- |
+| Caddy/proxy | Serves the existing built frontend, removes `/api`, proxies to FastAPI, terminates TLS, applies body/time limits, compression, security/cache headers, and denies public metrics. | Caddy certificate/config volumes; no model data. |
+| Frontend | Sends one multipart image to same-origin `/api/localize`, renders the three product statuses and safe reference thumbnails, and uses configured browser tiles. | Static hashed assets only. Tile URL/attribution/public token are build inputs. |
+| FastAPI | Validates uploads, assigns request IDs, enforces rate/capacity limits, owns one frozen localization service, exposes liveness/readiness and internal metrics, and returns typed safe responses. | Read-only production artifacts; one model/index in memory. |
+| Localization service | Embeds RGB pixels, retrieves exact top-30 references, performs the frozen geographic/confidence policy, and emits `ok`, `low_confidence`, or `out_of_coverage`. | SAGE source/checkpoint, FAISS index, metadata, confidence artifact. |
+| Telegram bot | Long-polls Telegram, downloads bounded photo bytes into memory, calls internal FastAPI, maps the response to chat text/native location, and adds cooldown/concurrency protection. | Bot token and network access to Telegram/FastAPI. No ML dependency. |
+| Artifact provisioner | Downloads pinned assets, validates bytes/SHA-256, safely extracts archives, validates tree hashes, and installs atomically. | Temporary egress plus named persistent artifact volume. |
 
-PostgreSQL/PostGIS остаётся опциональным хранилищем метаданных и будущих
-геозапросов. Дескрипторы и FAISS-индекс намеренно не помещаются в PostgreSQL:
-канонические таблицы хранятся в Parquet, изображения — в файловом слое,
-дескрипторы — в NumPy, индекс и его отображения — отдельными файлами.
+The production services are stateless apart from the artifact and Caddy volumes. User photos, chat messages, and localization results are not written to persistent storage.
 
-## Канонический reference manifest
+## Frozen localization boundary
 
-Контракт определён в [`ml/ingestion/schema.py`](../ml/ingestion/schema.py).
-`id` не зависит от позиции строки: это детерминированный UUIDv5 от
-`source:source_image_id`. Все сохраняемые стадии обязаны сохранить требуемые
-поля даже при нулевом результате.
+`configs/moscow_production_frozen.json` with SHA-256 `9c0c38f93d4c4f76eff8ef821508da0aafdd104f04ddd932b48d2834bbd2984e` is authoritative. Production startup fails when an environment override conflicts with its ML fields.
 
-| Поле | Представление | Назначение |
-|---|---|---|
-| `id` | непустая строка, уникальная | Стабильный внутренний reference ID. |
-| `city_id` | строка | Область данных, сейчас `moscow`; позволяет добавить другие индексы. |
-| `source` | строка | Источник записи; для текущей deployable gallery — `mapillary` или `kartaview`. |
-| `source_image_id` | строка | Стабильный ID изображения у источника. |
-| `sequence_id` | nullable string | Последовательность/трек для dedup и leakage-контроля. |
-| `image_path` | строка | Локальный путь внутри offline/runtime storage; не выдаётся API. |
-| `lat`, `lon` | конечные числа | Координата reference; проверяется по мировым границам, для `moscow` также по настроенному bbox. |
-| `captured_at` | nullable UTC ISO-8601 string | Время съёмки после нормализации. |
-| `heading` | nullable float `[0, 360)` | Направление камеры, если источник его предоставил. |
-| `quality_score` | nullable float | Аналитический приоритет/выбор лучшего дубля, не доказательство пригодности сцены. |
-| `license` | строка | Лицензия конкретного источника. |
-| `attribution` | строка | Текст, который должен сопровождать показ reference. |
-| `source_url` | строка | Ссылка на исходную запись/трек. |
-| `metadata_json` | JSON-строка | Детерминированно сериализованный JSON-текст; dict и литерал `"{}"` не смешиваются. |
+The frozen core is SAGE ViT-B at source revision `c7d6241c4885526d99d6c78c158024fc2a37097c`, checkpoint revision `2a2ea9964cdbdfd2211e7c625064a9d5e4678245` and checkpoint SHA-256 `8cfed7d4e8bbcdee4c016b29211f64ffd015c3cbae538034b3352c858af6a27e`. Descriptors are normalized float32 with dimension 8,448. Retrieval is exact `faiss.IndexFlatIP` with K=30 over 20,487 production references.
 
-`download_url` — служебное поле pipeline и не часть публичного reference
-контракта. После обработки добавляются `width`, `height`, `blur_score`,
-`brightness`, `exposure_score`, `h3_coarse` и `h3_fine`. Значения H3 — только
-индексные масштабы, не названия «район» или «улица».
+The production policy retains density-aware geographic-mode voting, rank decay, sequence-deduplicated support, weighted-medoid coordinates, the 14-feature confidence artifact, and threshold `0.9349250249145314`. Reranking and the approximate tier are disabled. Deployment changes do not alter these semantics.
 
-## Офлайн-путь данных
+The benchmark must be interpreted as an abstaining system: 127/1,499 answers (8.47% answer rate), with 96.85% <=100 m conditional accuracy among accepted answers. It is incorrect to call this “96.85% accuracy in Moscow.”
 
-1. Mapillary и KartaView пишут исходные нормализованные JSON, schema-v2
-   checkpoint с config fingerprint, append-only journal и cumulative/last-run
-   статистику. `MAPILLARY_ACCESS_TOKEN` читается только из окружения; без него
-   loader завершается с понятной ошибкой, не блокируя KartaView orchestration.
-2. Источники объединяются в один schema-validated Parquet. Downloader читает
-   его Arrow-батчами, держит не более `2 × workers` pending tasks, разрешает
-   только HTTPS и source-specific hosts и вручную валидирует каждый redirect.
-   Повторный запуск безопасен благодаря stable ID, checkpoint и повторной
-   проверке уже существующих файлов.
-3. Hard validation удаляет только отсутствующие/нечитаемые файлы,
-   недопустимые координаты и явно непригодные размеры/форматы.
-4. Quality stage вычисляет резкость, разрешение и экспозицию. Hard blur filter
-   по умолчанию равен нулю, поэтому score преимущественно служит анализу и
-   выбору дубля.
-5. Dedup сначала сравнивает SHA-256, затем локально индексированный pHash.
-   Кандидаты ограничиваются пространством, heading, sequence и временем;
-   winner выбирается quality-first. Нет глобального O(N²) сравнения и нет
-   географического per-location cap, который удалял бы разные виды.
-6. H3 resolution 6/9 добавляется для статистики. Финальный manifest снова
-   валидируется, а отчёт строит source/coverage графики и nearest-reference
-   статистику только когда она определима.
-7. Embedding job загружает модель один раз, работает батчами, сохраняет
-   immutable chunks/checkpoint и финализирует `descriptors.npy` через memmap без
-   полной конкатенации в RAM. Input signature хеширует сами image bytes, а
-   schema-v2 metadata связывает generation и SHA-256 каждого артефакта.
-   Результат:
-   `descriptors.npy`, `id_mapping.json`, `reference_metadata.jsonl`,
-   `build_metadata.json`, `failures.jsonl`.
-8. Индексатор проверяет размерность, finite/L2-инварианты и mapping, строит
-   correctness-first `IndexFlatIP` и сохраняет `index.faiss` вместе с mapping,
-   reference metadata и schema-v2 build metadata. Loader сверяет generation,
-   размеры, counts и SHA-256 sidecars и закрывается fail-safe при drift.
+## Artifact distribution and offline runtime
 
-## Онлайн-путь и fail-safe поведение
+Git contains frozen JSON configuration and the small confidence artifact, not the large checkpoint/index/gallery/thumbnail payload. `configs/production_artifacts.json` declares 10 exact artifacts and their version, immutable HTTPS source, size, SHA-256, destination, provenance, requirement status, and archive tree hash when relevant.
 
-FastAPI lifespan создаёт один `LocalizationService`, один retriever и один
-индекс на процесс. `/health` проверяет только живость процесса. `/ready`
-раздельно сообщает готовность модели, индекса, reference metadata и, если это
-явно включено, базы данных. `/localize` принимает ровно одно multipart-поле
-`image` формата JPEG/PNG/WebP и проверяет размер тела, MIME, magic signature,
-расширение, decode, decompression limits, dimensions, animation, EXIF
-orientation и RGB conversion.
+SAGE source comes from the exact official Git commit archive and its checkpoint from the exact official Hugging Face revision. GeoSnap-generated index, metadata, gallery, smoke inputs, and production thumbnail bundle are immutable assets of `geosnap-moscow-v4-artifacts-v1` on the repository's GitHub Releases page.
 
-После exact top-K search опциональный verifier может переставить только
-ограниченную голову списка. Затем локализатор:
+The named artifact volume is mounted at `GEOSNAP_ARTIFACT_DIR` (default `/var/lib/geosnap/artifacts`). The provisioner downloads to temporary files and atomically replaces only validated targets. The backend performs validation before loading and opens the SAGE snapshot through local Torch Hub source. Neither startup after provisioning nor requests depend on GitHub/Hugging Face access. Restarting reuses the volume.
 
-- формирует кластеры вокруг сильных anchors и проверяет расстояние до каждого
-  члена, поэтому single-link цепочка не объединяет далёкие точки;
-- не смешивает разные `city_id`/`index_id` и не усредняет разные моды;
-- выбирает географическую моду с rank-, sequence-, provider-, density- и
-  compactness-aware evidence, затем использует weighted medoid;
-- строит logistic confidence score из 14 интерпретируемых retrieval и
-  localization признаков без raw pixels;
-- возвращает `low_confidence` или `out_of_coverage`, когда evidence слабое;
-- оставляет `uncertainty_radius_m = null`, пока нет отдельной калибровки на
-  leakage-resistant московском наборе.
+Production previews cover exactly the indexed reference set. Reference IDs map to SHA-256 filenames in a validated manifest; the service never uses the historical raw `image_path` in artifact mode and never performs remote thumbnail fetching. This keeps the raw 12+ GB corpus outside production.
 
-Production сохраняет exact Part 2.5 confidence model: fit только на v3
-development с group cross-validation, threshold выбран только на независимой
-v3 calibration. V4 проверил его на новой one-shot выборке. Wilson interval
-остаётся reported evidence, а не kill-switch. Service загружает
-`configs/moscow_production_frozen.json`, требует matching config sidecar,
-проверяет confidence/gallery/embedding/index/evaluation hashes и отвергает
-конфликтующие model/K/localizer/index values.
-`uncertainty_radius_m` остаётся `null`.
+## HTTP and status flow
 
-API не возвращает абсолютные пути, download URL, токены или stack traces.
-Thumbnail разрешается сервером по `reference_id` из доверенного index sidecar;
-атрибуция возвращается для каждого отображаемого совпадения. Полный перечень
-лицензий и ограничений находится в [лицензионном аудите](licenses.md).
+The browser posts to `/api/localize`; Caddy strips `/api` and calls FastAPI `/localize`. The bot posts directly to `http://backend:8000/localize`. Both therefore use identical upload validation, rate limiting, inference capacity, retrieval, policy, and status semantics.
 
-## Модели и protocol выбора
+`ok` has a prediction and matches. `low_confidence` and `out_of_coverage` contain no authoritative prediction. Failures are distinct typed 4xx/5xx statuses. Thumbnail URLs are backend-relative `/thumbnails/{opaque-id}` and browser code resolves them below its `/api` base.
 
-MegaLoc, DINOv2+SALAD, SAGE и SelaVPR++ имеют pinned checkpoint-backed
-adapters. SALAD остаётся evaluation-only из-за GPL/checkpoint uncertainty.
-SelaVPR++ base и официальный two-stage reranker были проверены, но дали меньшую
-calibration product utility; CricaVPR отклонён из-за batch-dependent descriptor
-contract. Frozen selection — single-query SAGE ViT-B. Это не утверждение о
-превосходстве в других городах. Лицензии описаны в [licenses.md](licenses.md).
+FastAPI accepts one bounded, decoded JPEG/PNG/WebP and does not use EXIF GPS. One Uvicorn worker avoids duplicating model/index memory; a semaphore and bounded queue control expensive work. Timeout cancellation does not release capacity while a worker thread is still computing.
 
-Финальный selection protocol прошёл следующим порядком:
+## Observability
 
-1. V4 исключает все historical v1/v2/v3 query sequences и публикует disjoint
-   Mapillary/KartaView gallery/development/calibration/test manifests с
-   sequence, ID/source-ID, SHA-256, pHash и >=250 м geographic embargo.
-2. K, aggregation, 45-feature candidate schema and confidence architecture
-   выбраны только на development с geographically grouped out-of-fold scores.
-3. Coefficients, K, aggregation и gate family frozen до calibration;
-   calibration только выбрала candidate numeric thresholds.
-4. Exact Part 2.5 baseline и candidate frozen до единственной v4 test
-   transaction. Candidate не обобщился; prescribed Case 2 сохранил exact Part
-   2.5 policy без post-test tuning.
-5. Model/checkpoint, gallery, confidence and index hashes связаны в единственном
-   production config; permanent smoke проверяет именно этот contract.
+Every request receives a bounded request ID, returned as `X-Request-ID`. JSON stdout logs include timestamp, level, endpoint, status, duration, localization outcome and stage timings without image bytes or predicted coordinates. Docker log rotation is configured.
 
-Commons proxy и MSLS-derived benchmarks не могут выбрать production model:
-первый — hand-curated landmark-biased proxy, второй — внешний benchmark/training
-corpus, а оба не являются Mapillary/KartaView Moscow deployment data.
+`/health` reports process liveness only. `/ready` succeeds only after the frozen config, artifact integrity, SAGE/checkpoint, exact index, reference metadata, and confidence policy load. `/metrics` exposes low-cardinality Prometheus counters, histograms and gauges internally; Caddy returns 404 for public `/api/metrics`.
 
-## Текущие границы готовности
+## Map boundary and attribution
 
-- V2 source содержит 23 654, frozen v4 gallery/index — 20 487 references;
-  подробности — в [финальном отчёте](final_localization_core.md).
-- V4 split содержит 751 development, 750 calibration и 1 499 once-opened test
-  queries. Он не означает full-city coverage: заняты 93/400 cells,
-  dense-healthy только 30.
-- Frozen production test answer rate равен 8,47% при 96,85% conditional <=100
-  м и 8,21% all-query success, но 3/127 accepted errors >500 м не проходят
-  preferred <=1% catastrophic target.
-- OpenCV SIFT/LightGlue-compatible verification остаётся optional/default-off:
-  real 100-query ablation дала нулевой all-query accuracy gain и median
-  overhead +1 002 мс. Evidence и ограничения — в
-  [verification_report.md](verification_report.md).
-- `uncertainty_radius_m` нельзя считать калиброванным только из confidence
-  threshold; оно остаётся `null`, пока не появится отдельная проверенная
-  uncertainty calibration.
-- Docker Compose configuration проверена статически; stale 17,5 GB image не
-  был перестроен, а Docker daemon был недоступен. Clean functional build,
-  slimming и публичная browser QA остаются в Part 3.
+Tiles are fetched by the browser from an operator-selected production provider. The production build requires URL and attribution and rejects the standard public `tile.openstreetmap.org` endpoint. Caddy's CSP admits only the configured tile origin. A tile token, if used, is necessarily public. Provider, OpenStreetMap-data, Mapillary, and KartaView attribution remains part of the display contract.
+
+## Development and production separation
+
+The existing development Compose file retains direct localhost ports and mounted developer data/cache paths. Production uses `docker-compose.prod.yml`: no reload/debug/mock fallback, no public backend port, strict artifact validation, one worker, same-origin routing, safe CORS defaults, and immutable external artifacts. Research/evaluation commands remain available but are outside the deployment path.

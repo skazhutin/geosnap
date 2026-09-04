@@ -122,7 +122,7 @@ FINAL_MANIFEST := $(PROCESSED_DIR)/manifest_clean.parquet
 	calibrate-moscow-confidence benchmark-moscow-verification benchmark-moscow-test \
 	embed embed-moscow-gallery build-index index-moscow-gallery \
 	eval-data eval api frontend smoke smoke-moscow-v2 compose-config \
-	verify-moscow-production \
+	verify-moscow-production provision-production production-up production-down production-config verify-production \
 	plan-moscow-v2-acquisition expand-mapillary-v2 select-kartaview-v2 split-moscow-v2 \
 	coverage-moscow-v2 embed-moscow-v2 benchmark-moscow-v2-calibration calibrate-moscow-v2-confidence
 
@@ -135,6 +135,24 @@ test:
 	$(PYTHON) -m pytest -q
 	npm --prefix apps/frontend test -- --run
 	npm --prefix apps/frontend run build
+
+provision-production:
+	docker compose --env-file .env -f docker-compose.prod.yml --profile tools run --build --rm artifact-provisioner
+
+production-up:
+	docker compose --env-file .env -f docker-compose.prod.yml up -d --build backend proxy telegram-bot
+
+production-down:
+	docker compose --env-file .env -f docker-compose.prod.yml down
+
+production-config:
+	MAP_TILE_URL="$${MAP_TILE_URL:-https://tiles.example.invalid/{z}/{x}/{y}.png}" \
+	MAP_TILE_ORIGIN="$${MAP_TILE_ORIGIN:-https://tiles.example.invalid}" \
+	MAP_ATTRIBUTION="$${MAP_ATTRIBUTION:-Configuration validation}" \
+		docker compose --env-file /dev/null -f docker-compose.prod.yml config --quiet
+
+verify-production:
+	$(PYTHON) infra/scripts/verify_production.py
 
 ingest-sample:
 	$(MAKE) ingest-kartaview PROFILE=sample KARTAVIEW_EXTRA_ARGS="--center-lat 55.7558 --center-lon 37.6173 --radius-override-m 20 --max-tiles 1 --limit-per-tile 5 --max-pages-per-tile 1"

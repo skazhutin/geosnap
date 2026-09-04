@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,7 +94,7 @@ class FrozenRuntimeConfig:
     @property
     def index_dir(self) -> Path:
         path = Path(str(self.payload["index"]["directory"]))
-        return path if path.is_absolute() else (self.path.parent.parent / path).resolve()
+        return self._runtime_artifact_path(path)
 
     @property
     def confidence_model_path(self) -> Path | None:
@@ -109,7 +110,22 @@ class FrozenRuntimeConfig:
         if not value:
             raise RuntimeConfigError("frozen runtime config does not bind a gallery manifest")
         path = Path(str(value))
-        return path if path.is_absolute() else (self.path.parent.parent / path).resolve()
+        return self._runtime_artifact_path(path)
+
+    def _runtime_artifact_path(self, path: Path) -> Path:
+        """Map frozen ``data/...`` paths into an operational artifact volume.
+
+        The mapping changes storage only. Hashes and all frozen ML identities
+        remain authoritative and are still checked before use.
+        """
+
+        if path.is_absolute():
+            return path
+        artifact_root = os.environ.get("GEOSNAP_ARTIFACT_DIR")
+        if artifact_root and self.payload.get("status") == "production_selection_from_prefrozen_finalists":
+            parts = path.parts[1:] if path.parts and path.parts[0] == "data" else path.parts
+            return (Path(artifact_root).expanduser().resolve() / Path(*parts)).resolve()
+        return (self.path.parent.parent / path).resolve()
 
     @property
     def city_id(self) -> str:

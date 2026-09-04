@@ -4,6 +4,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -139,6 +140,41 @@ def test_production_adapters_point_to_pinned_official_sources() -> None:
     assert sela_rerank.descriptor_dim == 2560
     assert sela_rerank.metadata.extra["binary_descriptor_dim"] == 512
     assert len(sela.checkpoint_sha256) == len(sela_rerank.checkpoint_sha256) == 64
+
+
+def test_sage_production_loader_uses_local_verified_source_without_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "models/sage/source"
+    source.mkdir(parents=True)
+    (source / "hubconf.py").write_text("# pinned test source\n", encoding="utf-8")
+    checkpoint = tmp_path / "models/sage/SAGE_No-Encoder_Vit-B.pth"
+    checkpoint.write_bytes(b"verified-test-checkpoint")
+    monkeypatch.setenv("GEOSNAP_ARTIFACT_DIR", str(tmp_path))
+
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    class FakeHub:
+        load_state_dict_from_url = staticmethod(lambda *args, **kwargs: None)
+
+        @staticmethod
+        def load(repo: str, entrypoint: str, **kwargs: object) -> str:
+            calls.append((repo, entrypoint, kwargs))
+            return "local-model"
+
+    class FakeTorch:
+        hub = FakeHub()
+
+    retriever = SageVitBRetriever(device="cpu")
+    assert retriever._hub_load(FakeTorch()) == "local-model"
+    assert calls == [
+        (
+            str(source.resolve()),
+            "sage_vitb",
+            {"source": "local", "trust_repo": True, "pretrained": True, "progress": False},
+        )
+    ]
 
 
 def test_selavprplusplus_rerank_branch_contract() -> None:

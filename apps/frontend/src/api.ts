@@ -1,6 +1,6 @@
 import { parseLocalizeResponse, type LocalizeResponse } from "./types";
 
-const FALLBACK_API_BASE_URL = "http://localhost:8000";
+const FALLBACK_API_BASE_URL = "/api";
 
 function normalizeApiBaseUrl(value: string | undefined): string {
   const candidate = value?.trim() || FALLBACK_API_BASE_URL;
