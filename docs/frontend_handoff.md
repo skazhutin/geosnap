@@ -1,6 +1,8 @@
-# Frontend phase handoff
+# Frontend phase handoff (completed)
 
-This document is the production contract for the later GeoSnap frontend redesign. The current frontend was changed in Part 3 only where production routing, status handling, maps, privacy text, or deployment required it. It is functional, but it is not the final visual product.
+> Historical handoff: the dedicated product UI phase completed this contract. The current implementation and operational contract are documented in [`frontend.md`](frontend.md). This file remains as a record of backend invariants that future UI maintenance must preserve.
+
+This document was the production contract supplied to the final product UI phase. The implementation now satisfies it; the sections below remain authoritative for API and localization behavior during future maintenance.
 
 ## Stable API contract
 

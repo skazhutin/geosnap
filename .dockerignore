@@ -9,6 +9,8 @@ __pycache__
 .env
 apps/frontend/node_modules
 apps/frontend/dist
+apps/frontend/test-results
+apps/frontend/playwright-report
 data
 docs
 .playwright-cli

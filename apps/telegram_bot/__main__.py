@@ -26,7 +26,7 @@ def main() -> None:
         return
     application = build_application(settings)
     application.run_polling(
-        allowed_updates=["message"],
+        allowed_updates=["message", "callback_query"],
         drop_pending_updates=False,
         close_loop=True,
     )

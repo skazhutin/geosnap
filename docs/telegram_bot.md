@@ -1,46 +1,46 @@
 # Telegram bot
 
-The GeoSnap Telegram bot is a first-class but lightweight client of the shared FastAPI backend. It never imports Torch, FAISS, SAGE, the checkpoint, or the production index. `python-telegram-bot` 22.8 handles the Bot API, and production uses long polling so no additional public webhook route is required.
+The Telegram client is a lightweight, long-polling `python-telegram-bot` service in `apps/telegram_bot`. It sends image bytes to the internal FastAPI `/localize` endpoint and contains no Torch, FAISS, SAGE code, checkpoint or index.
 
-## Configuration and startup
+## Setup
 
-Create a bot with BotFather and place its token only in the server-side `TELEGRAM_BOT_TOKEN` environment variable. Never use a `VITE_*` variable for the token. Relevant settings are documented in `.env.example`:
+Create a bot with BotFather, keep the token server-side, and set:
 
-- `TELEGRAM_BOT_TOKEN`: required except in validation-only mode.
-- `TELEGRAM_BACKEND_URL`: internal origin; production Compose fixes this to `http://backend:8000`.
-- `TELEGRAM_USER_COOLDOWN_SECONDS`: per-user in-memory cooldown, default 8 seconds.
-- `TELEGRAM_MAX_CONCURRENCY`: maximum simultaneous bot update/localization work, default 2.
-- `TELEGRAM_MAX_DOWNLOAD_BYTES`: maximum Telegram download, default 10 MiB.
-- `TELEGRAM_BACKEND_TIMEOUT_SECONDS`: bot-to-backend timeout, default 30 seconds.
-- `TELEGRAM_VALIDATE_ONLY`: validates startup and keeps an idle container without contacting Telegram; useful when no token is available for a local Compose smoke.
+```dotenv
+TELEGRAM_BOT_TOKEN=<secret>
+TELEGRAM_VALIDATE_ONLY=false
+TELEGRAM_USER_COOLDOWN_SECONDS=8
+TELEGRAM_MAX_CONCURRENCY=2
+TELEGRAM_MAX_DOWNLOAD_BYTES=10485760
+TELEGRAM_BACKEND_TIMEOUT_SECONDS=30
+TELEGRAM_BOT_PUBLIC_URL=https://t.me/<public-bot-name>
+```
 
-Production is started with the rest of the platform using `make production-up`. For a tokenless configuration smoke set `TELEGRAM_VALIDATE_ONLY=true` and leave the token empty. The bot remains idle after validation in this mode; it does not poll or fake a live service. CI uses `python -m apps.telegram_bot --validate-config` for a one-shot check.
+`TELEGRAM_BOT_PUBLIC_URL` is optional and public; it only enables the website CTA. `TELEGRAM_BOT_TOKEN` is required for polling and must never enter Git, logs, a Dockerfile or the frontend. `TELEGRAM_VALIDATE_ONLY=true` validates configuration without contacting Telegram.
 
-## User behavior
+## Language and commands
 
-`/start` explains that GeoSnap estimates supported Moscow street scenes, results are approximate, and weak evidence can lead to abstention. `/help` explains accepted photo input, experimental/incomplete Moscow coverage, abstention, and default non-retention.
+`/start` first presents inline `🇷🇺 Русский` and `🇬🇧 English` choices. The selection lives only in process-memory `context.user_data`. `/language` reopens the selector and `/help` is localized. If a photo arrives before selection, its transient Telegram photo object is retained in memory and processed immediately after language choice; nothing is written to persistent storage.
 
-For a photo the bot selects Telegram's highest available photo resolution, enforces the download limit both before and after download, holds the bytes only in memory, creates a request ID, and posts the image to the internal backend `/localize` endpoint. Telegram metadata and user location are never used as localization evidence.
+Every supported response is localized in Russian and English:
 
-- `ok`: sends “Estimated location,” coordinates, a native Telegram location pin, an OpenStreetMap link, and an evidence score explicitly described as a ranking signal—not a probability. Reference providers are attributed when returned.
-- `low_confidence`: says potential matches exist but evidence is insufficient and sends no pin or coordinates.
-- `out_of_coverage`: says current Moscow references do not sufficiently represent the scene and sends no pin or coordinates.
-- Invalid/oversized image, backend 429, timeout, not-ready/5xx, malformed responses, Telegram errors, and unexpected failures map to concise retry-safe messages. Stack traces and internal details are never sent to the user.
+- `ok`: processing text is replaced by “Estimated location” / “Предполагаемое место”, four-decimal coordinates, strong-evidence wording, an explicit “not a probability” caveat, Google and Yandex inline buttons, provider attribution, a native location pin, and a prompt for the next photo;
+- `low_confidence`: explains that evidence is insufficient and sends no pin, coordinates or map buttons;
+- `out_of_coverage`: explains the current gallery gap without calling the photo invalid, and sends no pin, coordinates or map buttons;
+- rate limit, timeout, backend unavailable, malformed response, invalid/oversize image, cooldown and unsupported-message paths provide concise localized recovery text.
 
-Bot-side cooldown and concurrency are defense in depth. Every photo still calls the backend, so the backend's IP/client rate limit, bounded inference concurrency, queue, upload validation, and timeout remain authoritative.
+The highest-resolution Telegram photo variant is downloaded in memory, checked before and after download, forwarded with a generated request ID, and released after the handler returns. Telegram metadata and user location are not localization inputs.
 
-## Privacy and logging
+## Capacity and privacy
 
-The bot does not permanently store uploaded images, messages, usernames, or raw Telegram IDs. Images are downloaded into memory and discarded after the request. Logs contain a generated request ID and error category but no bot token, raw bytes, exact predicted coordinates, username, or message content. Cooldown identifiers are held only in process memory.
+The bot has a per-user cooldown, a process-wide semaphore and a 10 MiB default download limit. Requests still pass through backend rate and concurrency controls. Logs contain event category and request ID, never photo bytes, token, username or chat content. There is no user database.
 
-The Bot API itself necessarily transfers the user's photo through Telegram; deployments should reflect that platform boundary in any future public privacy policy.
+## Tests and future webhook migration
 
-## Tests and verification
+```bash
+.venv/bin/pytest -q apps/telegram_bot/tests
+```
 
-`apps/telegram_bot/tests` mocks both Telegram and backend I/O. It covers commands, supported and unsupported inputs, all three product statuses, invalid and oversized images, backend unavailability, timeout, 429, malformed payloads, cooldown, concurrency, and multipart forwarding. No real token is needed.
+Tests mock Telegram and backend calls and require no real token. They cover language selection, photo-before-language, `/help`, both languages for success/abstention/errors, map-link coordinate order, size limits, cooldown and concurrency.
 
-The production verifier runs the bot image in validation-only mode. A real Bot API smoke is optional and must be performed manually only when a token is already available; do not print or record it.
-
-## Future webhook migration
-
-If operational requirements later favor webhooks, expose a dedicated HTTPS bot endpoint, validate Telegram's secret token header, remove long polling, and keep the bot-to-backend request internal. This is a deployment change only: localization must remain exclusively in FastAPI.
+A later webhook deployment would add a public HTTPS Telegram route and secret verification while keeping the same handlers and internal backend client. Long polling remains simpler for the current single-instance MVP.

@@ -8,7 +8,8 @@ Browser
    v
 Caddy reverse proxy (TLS, limits, headers, compression)
    |                         external raster tile provider
-   +---- / -> built frontend -----------------------^
+   +---- / -> map-first frontend -------------------^
+   |             +---- frozen aggregate coverage grid
    |
    +---- /api/* -> FastAPI (one CPU process)
                          |
@@ -27,11 +28,11 @@ Telegram user -> Telegram Bot API -> bot container
 
 | Component | Responsibility | State/dependencies |
 | --- | --- | --- |
-| Caddy/proxy | Serves the existing built frontend, removes `/api`, proxies to FastAPI, terminates TLS, applies body/time limits, compression, security/cache headers, and denies public metrics. | Caddy certificate/config volumes; no model data. |
-| Frontend | Sends one multipart image to same-origin `/api/localize`, renders the three product statuses and safe reference thumbnails, and uses configured browser tiles. | Static hashed assets only. Tile URL/attribution/public token are build inputs. |
+| Caddy/proxy | Serves the built frontend, removes `/api`, proxies to FastAPI, terminates TLS, applies body/time limits, compression, security/cache headers, and denies public metrics. | Caddy certificate/config volumes; no model data. |
+| Frontend | Keeps a Moscow map visible, sends one multipart image to same-origin `/api/localize`, renders the three product statuses and safe reference thumbnails, and optionally overlays the frozen aggregate coverage grid. | Static hashed assets only. Tile URL/attribution/public token and optional public Telegram URL are build inputs. |
 | FastAPI | Validates uploads, assigns request IDs, enforces rate/capacity limits, owns one frozen localization service, exposes liveness/readiness and internal metrics, and returns typed safe responses. | Read-only production artifacts; one model/index in memory. |
 | Localization service | Embeds RGB pixels, retrieves exact top-30 references, performs the frozen geographic/confidence policy, and emits `ok`, `low_confidence`, or `out_of_coverage`. | SAGE source/checkpoint, FAISS index, metadata, confidence artifact. |
-| Telegram bot | Long-polls Telegram, downloads bounded photo bytes into memory, calls internal FastAPI, maps the response to chat text/native location, and adds cooldown/concurrency protection. | Bot token and network access to Telegram/FastAPI. No ML dependency. |
+| Telegram bot | Long-polls Telegram, manages an in-memory Russian/English preference, downloads bounded photo bytes into memory, calls internal FastAPI, maps the response to localized chat text/native location, and adds cooldown/concurrency protection. | Bot token and network access to Telegram/FastAPI. No ML dependency. |
 | Artifact provisioner | Downloads pinned assets, validates bytes/SHA-256, safely extracts archives, validates tree hashes, and installs atomically. | Temporary egress plus named persistent artifact volume. |
 
 The production services are stateless apart from the artifact and Caddy volumes. User photos, chat messages, and localization results are not written to persistent storage.
@@ -73,6 +74,8 @@ Every request receives a bounded request ID, returned as `X-Request-ID`. JSON st
 ## Map boundary and attribution
 
 Tiles are fetched by the browser from an operator-selected production provider. The production build requires URL and attribution and rejects the standard public `tile.openstreetmap.org` endpoint. Caddy's CSP admits only the configured tile origin. A tile token, if used, is necessarily public. Provider, OpenStreetMap-data, Mapillary, and KartaView attribution remains part of the display contract.
+
+The coverage overlay is a 28.5 KB static aggregate derived from the exact 20,487-reference production gallery and bound to its SHA-256. It exposes 93 occupied cells of the existing 20×20 Moscow grid, relative density classes, counts and provider diversity—not raw reference points. It loads only when selected (or with `?coverage=1`) and is explicitly described as coverage, not accuracy.
 
 ## Development and production separation
 

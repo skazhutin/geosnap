@@ -13,8 +13,15 @@ from apps.telegram_bot.backend import (
     BackendUnavailable,
     InvalidBackendResponse,
 )
-from apps.telegram_bot.bot import HELP_TEXT, START_TEXT, GeoSnapBot
+from apps.telegram_bot.bot import (
+    CHOOSE_LANGUAGE,
+    LANGUAGE_KEY,
+    PENDING_PHOTO_KEY,
+    TEXT,
+    GeoSnapBot,
+)
 from apps.telegram_bot.config import BotSettings
+from apps.telegram_bot.map_links import google_maps_url, yandex_maps_url
 
 
 class FakeBackend:
@@ -62,78 +69,136 @@ def settings(**overrides) -> BotSettings:
     return BotSettings(**values)
 
 
-def update_with(*photos: FakePhoto):
+def context(language: str | None = "en"):
+    data = {} if language is None else {LANGUAGE_KEY: language}
+    return SimpleNamespace(user_data=data)
+
+
+def update_with(*photos: FakePhoto, user_id: int = 42):
+    progress = SimpleNamespace(edit_text=AsyncMock())
     message = SimpleNamespace(
         photo=list(photos),
-        reply_text=AsyncMock(),
+        reply_text=AsyncMock(return_value=progress),
         reply_location=AsyncMock(),
     )
-    return SimpleNamespace(message=message, effective_user=SimpleNamespace(id=42))
+    return SimpleNamespace(message=message, effective_user=SimpleNamespace(id=user_id)), progress
 
 
 @pytest.mark.asyncio
-async def test_start() -> None:
-    update = update_with()
-    await GeoSnapBot(settings(), FakeBackend()).start(update, None)
-    update.message.reply_text.assert_awaited_once_with(START_TEXT)
+async def test_start_is_language_first() -> None:
+    update, _ = update_with()
+    ctx = context("en")
+    await GeoSnapBot(settings(), FakeBackend()).start(update, ctx)
+    assert LANGUAGE_KEY not in ctx.user_data
+    assert update.message.reply_text.await_args.args[0] == CHOOSE_LANGUAGE
+    labels = [button.text for button in update.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0]]
+    assert labels == ["🇷🇺 Русский", "🇬🇧 English"]
 
 
 @pytest.mark.asyncio
-async def test_help() -> None:
-    update = update_with()
-    await GeoSnapBot(settings(), FakeBackend()).help(update, None)
-    update.message.reply_text.assert_awaited_once_with(HELP_TEXT)
+@pytest.mark.parametrize("language", ["ru", "en"])
+async def test_language_selection_onboards_in_selected_language(language: str) -> None:
+    query = SimpleNamespace(
+        data=f"language:{language}",
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+        message=None,
+    )
+    update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=42))
+    ctx = context(None)
+    await GeoSnapBot(settings(), FakeBackend()).choose_language(update, ctx)
+    assert ctx.user_data[LANGUAGE_KEY] == language
+    query.answer.assert_awaited_once()
+    query.edit_message_text.assert_awaited_once_with(TEXT[language]["ready"])
 
 
 @pytest.mark.asyncio
-async def test_valid_photo_uses_highest_resolution_and_renders_ok() -> None:
+@pytest.mark.parametrize("language", ["ru", "en"])
+async def test_help_is_localized(language: str) -> None:
+    update, _ = update_with()
+    await GeoSnapBot(settings(), FakeBackend()).help(update, context(language))
+    update.message.reply_text.assert_awaited_once_with(TEXT[language]["help"])
+
+
+@pytest.mark.asyncio
+async def test_photo_before_language_is_retained_and_processed_after_choice() -> None:
+    photo = FakePhoto(b"pending")
+    first_update, _ = update_with(photo)
+    ctx = context(None)
+    backend = FakeBackend()
+    bot = GeoSnapBot(settings(), backend)
+    await bot.photo(first_update, ctx)
+    assert ctx.user_data[PENDING_PHOTO_KEY] is photo
+    first_update.message.reply_text.assert_awaited_once()
+
+    progress = SimpleNamespace(edit_text=AsyncMock())
+    callback_message = SimpleNamespace(
+        reply_text=AsyncMock(return_value=progress),
+        reply_location=AsyncMock(),
+    )
+    query = SimpleNamespace(
+        data="language:en",
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+        message=callback_message,
+    )
+    await bot.choose_language(
+        SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=42)),
+        ctx,
+    )
+    assert PENDING_PHOTO_KEY not in ctx.user_data
+    assert backend.calls[0][0] == b"pending"
+    callback_message.reply_location.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language, expected", [("en", "Estimated location"), ("ru", "Предполагаемое место")])
+async def test_valid_photo_uses_highest_resolution_and_localized_ok(language: str, expected: str) -> None:
     low = FakePhoto(b"low", width=320, height=240)
     high = FakePhoto(b"high", width=1280, height=720)
     backend = FakeBackend()
-    update = update_with(low, high)
-    await GeoSnapBot(settings(), backend).photo(update, None)
+    update, progress = update_with(low, high)
+    await GeoSnapBot(settings(), backend).photo(update, context(language))
     assert backend.calls[0][0] == b"high"
     high.get_file.assert_awaited_once()
     update.message.reply_location.assert_awaited_once_with(latitude=55.751244, longitude=37.618423)
-    text = update.message.reply_text.await_args.args[0]
-    assert "Estimated location" in text
-    assert "not a probability" in text
-    assert "Mapillary" not in text
-    assert "mapillary" in text and "kartaview" in text
+    text = progress.edit_text.await_args.args[0]
+    assert expected in text
+    assert "55.7512, 37.6184" in text
+    assert ("not a probability" in text) if language == "en" else ("не вероятность" in text)
+    keyboard = progress.edit_text.await_args.kwargs["reply_markup"]
+    urls = [button.url for button in keyboard.inline_keyboard[0]]
+    assert urls == [google_maps_url(55.751244, 37.618423), yandex_maps_url(55.751244, 37.618423)]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("status", "expected"),
-    [
-        ("low_confidence", "evidence is insufficient"),
-        ("out_of_coverage", "not sufficiently represented"),
-    ],
-)
-async def test_abstention_statuses_never_send_pin(status: str, expected: str) -> None:
-    update = update_with(FakePhoto())
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize("status", ["low_confidence", "out_of_coverage"])
+async def test_abstention_statuses_are_localized_and_never_send_pin(language: str, status: str) -> None:
+    update, progress = update_with(FakePhoto())
     await GeoSnapBot(settings(), FakeBackend({"status": status, "prediction": None, "matches": []})).photo(
-        update, None
+        update, context(language)
     )
-    assert expected in update.message.reply_text.await_args.args[0]
+    assert progress.edit_text.await_args.args[0] == TEXT[language][status]
     update.message.reply_location.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("error", "expected"),
+    ("error", "key"),
     [
-        (BackendRejectedImage("bad"), "could not be read"),
-        (BackendUnavailable("down"), "temporarily unavailable"),
-        (BackendTimeout("slow"), "timed out"),
-        (BackendRateLimited("busy"), "too many requests"),
-        (InvalidBackendResponse("bad json"), "unexpected response"),
+        (BackendRejectedImage("bad"), "too_large"),
+        (BackendUnavailable("down"), "unavailable"),
+        (BackendTimeout("slow"), "timeout"),
+        (BackendRateLimited("busy"), "rate_limited"),
+        (InvalidBackendResponse("bad json"), "malformed"),
     ],
 )
-async def test_backend_errors_are_safe(error: Exception, expected: str) -> None:
-    update = update_with(FakePhoto())
-    await GeoSnapBot(settings(), FakeBackend(error=error)).photo(update, None)
-    assert expected in update.message.reply_text.await_args.args[0]
+@pytest.mark.parametrize("language", ["ru", "en"])
+async def test_backend_errors_are_safe_and_localized(error: Exception, key: str, language: str) -> None:
+    update, progress = update_with(FakePhoto())
+    await GeoSnapBot(settings(), FakeBackend(error=error)).photo(update, context(language))
+    assert progress.edit_text.await_args.args[0] == TEXT[language][key]
     update.message.reply_location.assert_not_awaited()
 
 
@@ -141,31 +206,31 @@ async def test_backend_errors_are_safe(error: Exception, expected: str) -> None:
 async def test_oversized_photo_is_rejected_before_download() -> None:
     photo = FakePhoto(file_size=2048)
     backend = FakeBackend()
-    update = update_with(photo)
-    await GeoSnapBot(settings(max_download_bytes=1024), backend).photo(update, None)
-    assert "too large" in update.message.reply_text.await_args.args[0]
+    update, _ = update_with(photo)
+    await GeoSnapBot(settings(max_download_bytes=1024), backend).photo(update, context("en"))
+    assert update.message.reply_text.await_args.args[0] == TEXT["en"]["too_large"]
     photo.get_file.assert_not_awaited()
     assert not backend.calls
 
 
 @pytest.mark.asyncio
-async def test_unsupported_message() -> None:
-    update = update_with()
-    await GeoSnapBot(settings(), FakeBackend()).unsupported(update, None)
-    assert "send a street photo" in update.message.reply_text.await_args.args[0]
+@pytest.mark.parametrize("language", ["ru", "en"])
+async def test_unsupported_message_is_localized(language: str) -> None:
+    update, _ = update_with()
+    await GeoSnapBot(settings(), FakeBackend()).unsupported(update, context(language))
+    update.message.reply_text.assert_awaited_once_with(TEXT[language]["unsupported"])
 
 
 @pytest.mark.asyncio
-async def test_per_user_cooldown() -> None:
-    now = 100.0
+async def test_per_user_cooldown_is_localized() -> None:
     backend = FakeBackend()
-    bot = GeoSnapBot(settings(cooldown_seconds=10), backend, clock=lambda: now)
-    first = update_with(FakePhoto())
-    second = update_with(FakePhoto())
-    await bot.photo(first, None)
-    await bot.photo(second, None)
+    bot = GeoSnapBot(settings(cooldown_seconds=10), backend, clock=lambda: 100.0)
+    first, _ = update_with(FakePhoto())
+    second, _ = update_with(FakePhoto())
+    await bot.photo(first, context("ru"))
+    await bot.photo(second, context("ru"))
     assert len(backend.calls) == 1
-    assert "wait 10 seconds" in second.message.reply_text.await_args.args[0]
+    assert second.message.reply_text.await_args.args[0] == TEXT["ru"]["cooldown"].format(seconds=10)
 
 
 @pytest.mark.asyncio
@@ -183,12 +248,13 @@ async def test_bot_concurrency_is_bounded() -> None:
             return ok_result()
 
     bot = GeoSnapBot(settings(max_concurrency=1), SlowBackend())
-    updates = [
-        SimpleNamespace(
-            message=update_with(FakePhoto()).message,
-            effective_user=SimpleNamespace(id=index),
-        )
-        for index in range(3)
-    ]
-    await asyncio.gather(*(bot.photo(update, None) for update in updates))
+    updates = [update_with(FakePhoto(), user_id=index)[0] for index in range(3)]
+    await asyncio.gather(*(bot.photo(update, context("en")) for update in updates))
     assert maximum == 1
+
+
+def test_map_links_keep_lat_lon_order() -> None:
+    assert "query=55.751244,37.618423" in google_maps_url(55.751244, 37.618423)
+    yandex = yandex_maps_url(55.751244, 37.618423)
+    assert "ll=37.618423%2C55.751244" in yandex
+    assert "pt=37.618423%2C55.751244%2Cpm2rdm" in yandex

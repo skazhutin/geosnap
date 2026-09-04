@@ -12,7 +12,7 @@ jobs:
   test-and-smoke:
     name: test-and-smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -54,6 +54,14 @@ jobs:
           npm run build
           ! grep -R -E 'localhost:(3000|8000)' dist
 
+      - name: Install browser test engines
+        working-directory: apps/frontend
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Frontend browser tests
+        working-directory: apps/frontend
+        run: npm run test:e2e
+
       - name: Install Python dependencies
         run: |
           python -m pip install uv==0.11.19
@@ -77,7 +85,7 @@ jobs:
         run: |
           docker build --platform linux/amd64 -t geosnap-backend:ci -f apps/backend/Dockerfile .
           docker build --platform linux/amd64 -t geosnap-telegram-bot:ci -f apps/telegram_bot/Dockerfile .
-          docker build --build-arg VITE_API_BASE_URL=/api --build-arg 'VITE_MAP_TILE_URL=https://tiles.example.invalid/{z}/{x}/{y}.png' --build-arg 'VITE_MAP_ATTRIBUTION=CI configuration only' -t geosnap-proxy:ci -f infra/caddy/Dockerfile .
+          docker build --build-arg VITE_API_BASE_URL=/api --build-arg 'VITE_MAP_TILE_URL=https://tiles.example.invalid/{z}/{x}/{y}.png' --build-arg 'VITE_MAP_ATTRIBUTION=CI configuration only' --build-arg 'VITE_TELEGRAM_BOT_URL=https://t.me/geosnap_test_bot' -t geosnap-proxy:ci -f infra/caddy/Dockerfile .
           docker run --rm --platform linux/amd64 geosnap-telegram-bot:ci python -m apps.telegram_bot --validate-config
           docker run --rm --platform linux/amd64 geosnap-telegram-bot:ci python -c "import importlib.util; assert importlib.util.find_spec('torch') is None; assert importlib.util.find_spec('faiss') is None"
 

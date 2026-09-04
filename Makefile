@@ -115,7 +115,7 @@ KARTAVIEW_MERGE_JSON = $(if $(filter moscow,$(PROFILE)),$(KARTAVIEW_SELECTED_JSO
 RAW_MANIFEST := $(RAW_DIR)/manifest.parquet
 FINAL_MANIFEST := $(PROCESSED_DIR)/manifest_clean.parquet
 
-.PHONY: setup test ingest-sample ingest-moscow fetch-moscow-boundary screen-moscow-images combine-moscow-gallery prepare-moscow-gallery \
+.PHONY: setup test frontend-e2e ingest-sample ingest-moscow fetch-moscow-boundary screen-moscow-images combine-moscow-gallery prepare-moscow-gallery \
 	ingest-mapillary ingest-mapillary-citywide ingest-kartaview \
 	plan-kartaview-sequences expand-kartaview-sequences select-kartaview-frames \
 	merge download prepare-data split-moscow benchmark-moscow benchmark-moscow-models \
@@ -135,6 +135,10 @@ test:
 	$(PYTHON) -m pytest -q
 	npm --prefix apps/frontend test -- --run
 	npm --prefix apps/frontend run build
+	npm --prefix apps/frontend run test:e2e
+
+frontend-e2e:
+	npm --prefix apps/frontend run test:e2e
 
 provision-production:
 	docker compose --env-file .env -f docker-compose.prod.yml --profile tools run --build --rm artifact-provisioner

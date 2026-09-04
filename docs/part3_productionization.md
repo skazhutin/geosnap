@@ -30,7 +30,7 @@ Production thumbnails cover exactly 20,487 indexed IDs. Images are bounded to 48
 
 The backend uses a pinned multi-stage Python 3.12 slim base, a hash-locked production-only environment, official `torch==2.13.0+cpu`/`torchvision==0.28.0+cpu`, and FAISS CPU. The clean image content size is 293,694,900 bytes; local unpacked/deduplicated Docker disk use is 1.39 GB. CPU Torch is the largest necessary component (`torch` 695 MiB inside a 904 MiB virtualenv). CUDA is unavailable and no NVIDIA runtime/library package is present. Pytest, Ruff, pandas, PyArrow, Transformers, cache data and build tools are absent; the previously missing PrettyTable runtime import is present.
 
-The Telegram image is 46,511,097 bytes and contains `python-telegram-bot` 22.8 but no Torch, FAISS, SAGE code, checkpoint, index or artifact volume. The final proxy content image is 21,904,765 bytes. All services run non-root, read-only, capability-dropped containers with bounded tmpfs and stdout log rotation.
+The final Telegram image is 46,523,144 bytes and contains `python-telegram-bot` 22.8 but no Torch, FAISS, SAGE code, checkpoint, index or artifact volume. The final product-UI proxy content image is 21,911,439 bytes. All services run non-root, read-only, capability-dropped containers with bounded tmpfs and stdout log rotation.
 
 Caddy serves the existing built frontend, proxies same-origin `/api/*`, terminates automatic TLS for an operator-supplied domain, compresses, enforces body/time bounds, sets security/cache headers, and keeps metrics private. FastAPI is internal only. The long-polling bot reaches the same `/localize` authority over the internal network.
 

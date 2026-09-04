@@ -84,7 +84,7 @@ This establishes a safe default, not a throughput target. Increase concurrency o
 - Minimum: 4 native x86-64 CPU cores, 4 GiB RAM, and 4 GiB free persistent/runtime disk.
 - Recommended: 8 modern x86-64 CPU cores, 8 GiB RAM, and 8 GiB free disk.
 - Artifact payload sources total 1,384,949,790 bytes; the installed persistent volume is 1,603,730,319 bytes across 20,526 files because it retains verified download archives plus extracted SAGE/thumbnails.
-- Final compressed/content image sizes are 293,694,900 bytes backend, 46,511,097 bytes bot, and 21,904,765 bytes proxy. The backend's unpacked runtime is about 1.1 GiB; `/opt/venv` is 904 MiB, dominated by CPU Torch at 695 MiB.
+- Final compressed/content image sizes are 293,694,900 bytes backend, 46,523,144 bytes bot, and 21,911,439 bytes proxy. The backend's unpacked runtime is about 1.1 GiB; `/opt/venv` is 904 MiB, dominated by CPU Torch at 695 MiB.
 - Container writable layers remain effectively empty (about 33 KiB backend and 4 KiB each proxy/bot during the smoke). Reserve remaining recommended disk for Docker layer unpacking, Caddy state, bounded logs, and rollback images.
 
 The production volume contains no raw 12+ GiB historical imagery. Its preview set is the optimized, indexed-only WebP bundle.

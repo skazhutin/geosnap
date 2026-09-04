@@ -1,5 +1,6 @@
 import {
   type ChangeEvent,
+  type DragEvent,
   type FormEvent,
   lazy,
   Suspense,
@@ -8,258 +9,293 @@ import {
   useState,
 } from "react";
 
-import { localizeImage, safeThumbnailUrl } from "./api";
-import mapillaryLogo from "./assets/mapillary-logo.svg";
-import type { ApiStatus, LocalizeResponse, ReferenceMatch } from "./types";
+import { ApiClientError, localizeImage, safeThumbnailUrl } from "./api";
+import { TELEGRAM_BOT_URL } from "./config";
+import {
+  AlertIcon,
+  CheckIcon,
+  ChevronIcon,
+  CloseIcon,
+  CopyIcon,
+  ExternalIcon,
+  ImageIcon,
+  TelegramIcon,
+  UploadIcon,
+} from "./components/Icons";
+import { googleMapsUrl, yandexMapsUrl } from "./mapLinks";
+import type { ApiStatus, LocalizeResponse, Prediction, ReferenceMatch } from "./types";
 
 const ResultMap = lazy(() =>
   import("./components/ResultMap").then((module) => ({ default: module.ResultMap })),
 );
 
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-const STATUS_COPY: Record<Exclude<ApiStatus, "ok">, { title: string; body: string }> = {
+type ErrorCode = Exclude<ApiStatus, "ok" | "low_confidence" | "out_of_coverage"> |
+  "api_unreachable" | "api_timeout" | "malformed_response";
+
+type UiState =
+  | { phase: "idle" }
+  | { phase: "selected"; file: File }
+  | { phase: "processing"; file: File }
+  | { phase: "ok"; file: File; result: LocalizeResponse }
+  | { phase: "low_confidence"; file: File; result: LocalizeResponse }
+  | { phase: "out_of_coverage"; file: File; result: LocalizeResponse }
+  | { phase: "error"; file: File | null; fileName?: string; code: ErrorCode; retryAfter: number | null };
+
+const ERROR_COPY: Record<ErrorCode, { title: string; body: string; retryable: boolean }> = {
   invalid_image: {
-    title: "Изображение не читается",
-    body: "Выберите целую фотографию в формате JPEG, PNG или WebP.",
+    title: "We couldn’t read that image",
+    body: "Choose an intact JPEG, PNG or WebP street photo.",
+    retryable: false,
   },
   unsupported_format: {
-    title: "Формат не поддерживается",
-    body: "GeoSnap принимает фотографии JPEG, PNG и WebP.",
+    title: "Unsupported file format",
+    body: "GeoSnap accepts JPEG, PNG and WebP images.",
+    retryable: false,
   },
   image_too_large: {
-    title: "Файл слишком большой",
-    body: "Уменьшите размер изображения и попробуйте ещё раз.",
+    title: "Image is too large",
+    body: "Choose a file no larger than 10 MiB.",
+    retryable: false,
   },
   model_not_ready: {
-    title: "Модель ещё не готова",
-    body: "Сервис локализации запускается. Попробуйте немного позже.",
+    title: "GeoSnap is starting",
+    body: "The localization model is not ready yet. Try again shortly.",
+    retryable: true,
   },
   index_not_ready: {
-    title: "Галерея ещё не готова",
-    body: "Индекс эталонных фотографий недоступен. Попробуйте немного позже.",
-  },
-  low_confidence: {
-    title: "Недостаточно уверенности",
-    body: "Похожие места не образуют надёжную географическую гипотезу. Попробуйте другой ракурс с заметными зданиями или вывесками.",
-  },
-  out_of_coverage: {
-    title: "Вне текущего покрытия",
-    body: "Эта сцена недостаточно представлена в текущей эталонной галерее Москвы.",
+    title: "Reference gallery is starting",
+    body: "The production index is not ready yet. Try again shortly.",
+    retryable: true,
   },
   internal_error: {
-    title: "Не удалось выполнить локализацию",
-    body: "Сервис столкнулся с внутренней ошибкой. Повторите попытку позже.",
+    title: "Localization failed",
+    body: "GeoSnap hit an internal error. Your photo remains here so you can retry.",
+    retryable: true,
   },
   rate_limited: {
-    title: "Слишком много запросов",
-    body: "Подождите немного и повторите попытку.",
+    title: "Too many requests",
+    body: "GeoSnap is protecting localization capacity. Wait, then retry this photo.",
+    retryable: true,
   },
   service_overloaded: {
-    title: "Сервис занят",
-    body: "Очередь локализации заполнена. Попробуйте ещё раз через несколько секунд.",
+    title: "GeoSnap is busy",
+    body: "The localization queue is full. Try this photo again in a few seconds.",
+    retryable: true,
   },
   gateway_timeout: {
-    title: "Превышено время ожидания",
-    body: "Локализация заняла слишком много времени. Повторите попытку позже.",
+    title: "Localization timed out",
+    body: "The request took too long. Try this photo again.",
+    retryable: true,
+  },
+  api_unreachable: {
+    title: "GeoSnap is unavailable",
+    body: "The website cannot reach the localization service. Try again shortly.",
+    retryable: true,
+  },
+  api_timeout: {
+    title: "Localization timed out",
+    body: "The service did not answer in time. Try this photo again.",
+    retryable: true,
+  },
+  malformed_response: {
+    title: "Unexpected service response",
+    body: "GeoSnap returned an invalid response. Try again later.",
+    retryable: true,
   },
 };
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+function stateFile(state: UiState): File | null {
+  return "file" in state ? state.file : null;
 }
 
-function formatConfidence(value: number): string {
-  return value.toFixed(3);
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatCoordinate(value: number): string {
-  return value.toFixed(5);
+  return value.toFixed(4);
 }
 
 function sourceName(source: string): string {
-  const known: Record<string, string> = {
-    mapillary: "Mapillary",
-    kartaview: "KartaView",
-  };
+  const known: Record<string, string> = { mapillary: "Mapillary", kartaview: "KartaView" };
   return known[source.toLowerCase()] ?? source;
 }
 
 function MatchCard({ match, rank }: { match: ReferenceMatch; rank: number }) {
   const thumbnail = safeThumbnailUrl(match.thumbnail_url);
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
-  const isMapillary = match.source.toLowerCase() === "mapillary";
   return (
     <article className="match-card">
       {thumbnail && !thumbnailFailed ? (
         <img
           className="match-thumbnail"
           src={thumbnail}
-          alt={`Эталонное изображение ${rank} из ${sourceName(match.source)}`}
+          alt={`Reference ${rank} from ${sourceName(match.source)}`}
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => setThumbnailFailed(true)}
         />
       ) : (
-        <div className="match-placeholder" aria-hidden="true">
-          {String(rank).padStart(2, "0")}
-        </div>
+        <div className="match-placeholder" aria-hidden="true"><ImageIcon /></div>
       )}
       <div className="match-copy">
         <div className="match-heading">
-          {isMapillary ? (
-            <a
-              className="mapillary-brand"
-              href={match.source_url}
-              target="_blank"
-              rel="noreferrer"
-              aria-label="Открыть снимок в Mapillary"
-            >
-              <img src={mapillaryLogo} alt="" aria-hidden="true" />
-              <span>Mapillary</span>
-            </a>
-          ) : (
-            <span>{sourceName(match.source)}</span>
-          )}
-          <span className="score">score {match.retrieval_score.toFixed(3)}</span>
+          <strong>#{rank} · {sourceName(match.source)}</strong>
+          <span>{match.retrieval_score.toFixed(3)}</span>
         </div>
-        <p>
-          {formatCoordinate(match.lat)}, {formatCoordinate(match.lon)}
-        </p>
-        <small>{match.attribution}</small>
-        {thumbnail && !thumbnailFailed && (
-          <small className="image-change-note">Миниатюра уменьшена GeoSnap.</small>
-        )}
-        <div className="attribution-links">
-          <a href={match.source_url} target="_blank" rel="noreferrer">
-            Снимок
-          </a>
-          {match.contributor_url && (
-            <a href={match.contributor_url} target="_blank" rel="noreferrer">
-              Автор
-            </a>
-          )}
+        <p>{match.attribution}</p>
+        <div className="match-links">
+          <a href={match.source_url} target="_blank" rel="noreferrer">View source <ExternalIcon /></a>
           {match.license_url ? (
-            <a href={match.license_url} target="_blank" rel="noreferrer">
-              {match.license}
-            </a>
-          ) : (
-            <span>{match.license}</span>
-          )}
+            <a href={match.license_url} target="_blank" rel="noreferrer">{match.license}</a>
+          ) : <span>{match.license}</span>}
         </div>
       </div>
     </article>
   );
 }
 
-function ResultDetails({ result }: { result: LocalizeResponse }) {
-  const prediction = result.status === "ok" ? result.prediction : null;
-  const elapsed = result.diagnostics.total_ms;
+function PhotoSummary({ file, previewUrl, onReplace, onRemove }: {
+  file: File;
+  previewUrl: string | null;
+  onReplace: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="photo-summary">
+      {previewUrl ? <img src={previewUrl} alt="Selected street photo preview" /> : <ImageIcon />}
+      <div><strong>{file.name}</strong><span>{formatBytes(file.size)}</span></div>
+      <button type="button" onClick={onReplace}>Replace</button>
+      <button type="button" className="icon-button" onClick={onRemove} aria-label="Remove selected photo"><CloseIcon /></button>
+    </div>
+  );
+}
+
+function SuccessResult({ result }: { result: LocalizeResponse }) {
+  const prediction = result.prediction as Prediction;
+  const [copied, setCopied] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const visibleMatches = showAll ? result.matches : result.matches.slice(0, 3);
+  const coordinates = `${formatCoordinate(prediction.lat)}, ${formatCoordinate(prediction.lon)}`;
+
+  async function copyCoordinates() {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(coordinates);
+      } else {
+        const text = document.createElement("textarea");
+        text.value = coordinates;
+        text.setAttribute("readonly", "");
+        text.style.position = "fixed";
+        text.style.opacity = "0";
+        document.body.appendChild(text);
+        text.select();
+        const copied = document.execCommand("copy");
+        text.remove();
+        if (!copied) throw new Error("clipboard_unavailable");
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  }
 
   return (
-    <section className="results" aria-live="polite">
-      {prediction ? (
-        <>
-          <div className="result-title-row">
-            <div>
-              <p className="eyebrow success-label">Гипотеза найдена</p>
-              <h2>Предсказанная точка</h2>
-            </div>
-            <div className="confidence" aria-label={`Оценка свидетельств ${formatConfidence(prediction.confidence)}`}>
-              <strong>{formatConfidence(prediction.confidence)}</strong>
-              <span>оценка, не вероятность</span>
-            </div>
-          </div>
-
-          <Suspense fallback={<div className="map-loading" role="status">Загружаем карту…</div>}>
-            <ResultMap prediction={prediction} />
-          </Suspense>
-
-          <div className="coordinate-strip">
-            <div>
-              <span>Широта</span>
-              <strong>{formatCoordinate(prediction.lat)}</strong>
-            </div>
-            <div>
-              <span>Долгота</span>
-              <strong>{formatCoordinate(prediction.lon)}</strong>
-            </div>
-            <div>
-              <span>Неопределённость</span>
-              <strong>
-                {prediction.uncertainty_radius_m
-                  ? `± ${Math.round(prediction.uncertainty_radius_m)} м`
-                  : "не рассчитана"}
-              </strong>
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className={`status-card status-${result.status}`} role="status">
-          <span className="status-symbol" aria-hidden="true">!</span>
-          <div>
-            <p className="eyebrow">Результат анализа</p>
-            <h2>{STATUS_COPY[result.status as Exclude<ApiStatus, "ok">].title}</h2>
-            <p>{STATUS_COPY[result.status as Exclude<ApiStatus, "ok">].body}</p>
-          </div>
+    <section className="result-block" aria-labelledby="result-title">
+      <div className="result-heading">
+        <span className="result-icon"><CheckIcon /></span>
+        <div>
+          <p className="eyebrow success">Strong visual agreement</p>
+          <h2 id="result-title" tabIndex={-1}>Estimated location</h2>
         </div>
-      )}
-
-      {result.hypotheses.length > 1 && (
-        <div className="hypotheses-block">
-          <div className="section-heading">
-            <h3>Географические гипотезы</h3>
-            <span>ранжированы по согласованности</span>
-          </div>
-          <ol className="hypotheses-list">
-            {result.hypotheses.slice(0, 3).map((hypothesis, index) => (
-              <li key={`${hypothesis.lat}-${hypothesis.lon}-${index}`}>
-                <span>{index + 1}</span>
-                <strong>
-                  {formatCoordinate(hypothesis.lat)}, {formatCoordinate(hypothesis.lon)}
-                </strong>
-                <small>{formatConfidence(hypothesis.score)}</small>
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
-
+      </div>
+      <p className="evidence-copy">The accepted result passed GeoSnap’s evidence policy. This is a ranking signal, not a probability.</p>
+      <div className="coordinate-row">
+        <code>{coordinates}</code>
+        <button type="button" onClick={copyCoordinates} aria-label="Copy coordinates"><CopyIcon /> {copied ? "Copied" : "Copy"}</button>
+      </div>
+      <div className="external-actions">
+        <a href={googleMapsUrl(prediction.lat, prediction.lon)} target="_blank" rel="noreferrer">Google Maps <ExternalIcon /></a>
+        <a href={yandexMapsUrl(prediction.lat, prediction.lon)} target="_blank" rel="noreferrer">Yandex Maps <ExternalIcon /></a>
+      </div>
       {result.matches.length > 0 && (
-        <div className="matches-block">
-          <div className="section-heading">
-            <h3>Ближайшие эталоны</h3>
-            <span>показано {Math.min(result.matches.length, 6)}</span>
-          </div>
-          <div className="matches-grid">
-            {result.matches.slice(0, 6).map((match, index) => (
-              <MatchCard key={`${match.source}-${match.reference_id}`} match={match} rank={index + 1} />
-            ))}
-          </div>
-          <p className="imagery-note">
-            Авторство каждого эталонного изображения указано непосредственно в карточке источника.
-          </p>
-        </div>
+        <section className="matches-block" aria-labelledby="matches-title">
+          <div className="section-heading"><h3 id="matches-title">Strongest references</h3><span>{result.matches.length} returned</span></div>
+          <div className="matches-list">{visibleMatches.map((match, index) => <MatchCard key={`${match.source}-${match.reference_id}`} match={match} rank={index + 1} />)}</div>
+          {result.matches.length > 3 && (
+            <button className="show-more" type="button" onClick={() => setShowAll((value) => !value)} aria-expanded={showAll}>
+              {showAll ? "Show fewer" : `Show ${result.matches.length - 3} more`} <ChevronIcon />
+            </button>
+          )}
+          <p className="source-note">Reference imagery attribution and licenses are attached to each source.</p>
+        </section>
       )}
+      {typeof result.diagnostics.total_ms === "number" && <p className="timing">Processed in {(result.diagnostics.total_ms / 1000).toFixed(1)} s</p>}
+    </section>
+  );
+}
 
-      {typeof elapsed === "number" && (
-        <p className="timing">Обработано за {Math.max(1, Math.round(elapsed))} мс</p>
-      )}
+function AbstentionResult({ phase }: { phase: "low_confidence" | "out_of_coverage" }) {
+  const copy = phase === "low_confidence"
+    ? {
+        label: "Evidence below acceptance threshold",
+        title: "Not enough evidence",
+        body: "Potential matches were found, but they do not support a reliable location. Try another angle with distinctive buildings, signs or street structure.",
+      }
+    : {
+        label: "Reference coverage gap",
+        title: "Scene not represented",
+        body: "This scene is not sufficiently represented by GeoSnap’s current Moscow reference gallery. The photo itself may still be valid.",
+      };
+  return (
+    <section className="status-block abstention" aria-labelledby="status-title">
+      <span className="status-icon"><AlertIcon /></span>
+      <div>
+        <p className="eyebrow">{copy.label}</p>
+        <h2 id="status-title" tabIndex={-1}>{copy.title}</h2>
+        <p>{copy.body}</p>
+        <strong>No location pin has been placed.</strong>
+      </div>
+    </section>
+  );
+}
+
+function ErrorResult({ state, onRetry }: {
+  state: Extract<UiState, { phase: "error" }>;
+  onRetry: () => void;
+}) {
+  const copy = ERROR_COPY[state.code];
+  return (
+    <section className="status-block error" role="alert" aria-labelledby="error-title">
+      <span className="status-icon"><AlertIcon /></span>
+      <div>
+        <p className="eyebrow">Request not completed</p>
+        <h2 id="error-title" tabIndex={-1}>{copy.title}</h2>
+        <p>{copy.body}</p>
+        {state.code === "rate_limited" && state.retryAfter !== null && <strong>Retry after about {state.retryAfter} seconds.</strong>}
+        {copy.retryable && state.file && <button type="button" className="text-button" onClick={onRetry}>Retry this photo</button>}
+      </div>
     </section>
   );
 }
 
 function App() {
-  const [file, setFile] = useState<File | null>(null);
+  const [ui, setUi] = useState<UiState>({ phase: "idle" });
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [result, setResult] = useState<LocalizeResponse | null>(null);
-  const [clientError, setClientError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [coverageVisible, setCoverageVisible] = useState(() => new URLSearchParams(window.location.search).get("coverage") === "1");
+  const fileInput = useRef<HTMLInputElement>(null);
   const activeRequest = useRef<AbortController | null>(null);
+  const requestSequence = useRef(0);
+  const file = stateFile(ui);
 
   useEffect(() => {
-    if (!file) {
+    if (!file || !SUPPORTED_IMAGE_TYPES.has(file.type)) {
       setPreviewUrl(null);
       return undefined;
     }
@@ -268,167 +304,181 @@ function App() {
     return () => URL.revokeObjectURL(objectUrl);
   }, [file]);
 
-  useEffect(
-    () => () => {
-      activeRequest.current?.abort();
-    },
-    [],
-  );
+  useEffect(() => () => activeRequest.current?.abort(), []);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (coverageVisible) url.searchParams.set("coverage", "1");
+    else url.searchParams.delete("coverage");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [coverageVisible]);
+
+  useEffect(() => {
+    if (ui.phase === "ok") document.getElementById("result-title")?.focus();
+    else if (ui.phase === "low_confidence" || ui.phase === "out_of_coverage") {
+      document.getElementById("status-title")?.focus();
+    } else if (ui.phase === "error") document.getElementById("error-title")?.focus();
+  }, [ui.phase]);
+
+  function resetInput() {
+    if (fileInput.current) fileInput.current.value = "";
+  }
 
   function chooseFile(selected: File | undefined) {
     activeRequest.current?.abort();
-    setResult(null);
-    setClientError(null);
-    setIsLoading(false);
-
+    requestSequence.current += 1;
+    setIsDragging(false);
     if (!selected) {
-      setFile(null);
+      resetInput();
+      setUi({ phase: "idle" });
       return;
     }
     if (!SUPPORTED_IMAGE_TYPES.has(selected.type)) {
-      setFile(null);
-      setClientError(STATUS_COPY.unsupported_format.body);
+      resetInput();
+      setUi({ phase: "error", file: null, fileName: selected.name, code: "unsupported_format", retryAfter: null });
       return;
     }
-    setFile(selected);
+    if (selected.size > MAX_UPLOAD_BYTES) {
+      setUi({ phase: "error", file: selected, code: "image_too_large", retryAfter: null });
+      return;
+    }
+    setUi({ phase: "selected", file: selected });
   }
 
   function onFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const selected = event.currentTarget.files?.[0];
-    chooseFile(selected);
-    if (selected && !SUPPORTED_IMAGE_TYPES.has(selected.type)) {
-      event.currentTarget.value = "";
-    }
+    chooseFile(event.currentTarget.files?.[0]);
   }
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!file || isLoading) return;
-
+  async function submitFile(selected: File) {
     const controller = new AbortController();
     activeRequest.current?.abort();
     activeRequest.current = controller;
-    setClientError(null);
-    setResult(null);
-    setIsLoading(true);
-
+    const sequence = ++requestSequence.current;
+    setUi({ phase: "processing", file: selected });
     try {
-      const response = await localizeImage(file, controller.signal);
-      if (activeRequest.current === controller) setResult(response);
+      const outcome = await localizeImage(selected, controller.signal);
+      if (activeRequest.current !== controller || sequence !== requestSequence.current) return;
+      const { response, retryAfterSeconds } = outcome;
+      if (response.status === "ok") setUi({ phase: "ok", file: selected, result: response });
+      else if (response.status === "low_confidence") setUi({ phase: "low_confidence", file: selected, result: response });
+      else if (response.status === "out_of_coverage") setUi({ phase: "out_of_coverage", file: selected, result: response });
+      else setUi({ phase: "error", file: selected, code: response.status, retryAfter: retryAfterSeconds });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      if (activeRequest.current === controller) {
-        setClientError(
-          error instanceof Error && error.message === "api_unreachable"
-            ? "Не удалось связаться с API GeoSnap. Проверьте, что backend запущен, и повторите попытку."
-            : "Сервис вернул некорректный ответ. Повторите попытку позже.",
-        );
-      }
+      if (activeRequest.current !== controller || sequence !== requestSequence.current) return;
+      const code: ErrorCode = error instanceof ApiClientError
+        ? error.kind === "timeout" ? "api_timeout" : error.kind === "unreachable" ? "api_unreachable" : "malformed_response"
+        : "malformed_response";
+      setUi({ phase: "error", file: selected, code, retryAfter: null });
     } finally {
-      if (activeRequest.current === controller) {
-        activeRequest.current = null;
-        setIsLoading(false);
-      }
+      if (activeRequest.current === controller) activeRequest.current = null;
     }
   }
 
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (ui.phase === "selected") void submitFile(ui.file);
+  }
+
+  function onDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    chooseFile(event.dataTransfer.files?.[0]);
+  }
+
+  function openFilePicker() {
+    fileInput.current?.click();
+  }
+
+  function removePhoto() {
+    activeRequest.current?.abort();
+    requestSequence.current += 1;
+    resetInput();
+    setUi({ phase: "idle" });
+  }
+
+  function tryAnotherPhoto() {
+    removePhoto();
+    openFilePicker();
+  }
+
+  const prediction = ui.phase === "ok" ? ui.result.prediction : null;
+  const liveMessage = ui.phase === "processing" ? "Photo selected. Localization in progress."
+    : ui.phase === "ok" ? "Estimated location is ready and shown on the map."
+      : ui.phase === "low_confidence" || ui.phase === "out_of_coverage" ? "GeoSnap abstained and placed no location marker."
+        : ui.phase === "error" ? ERROR_COPY[ui.code].title : "";
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell phase-${ui.phase}`}>
       <header className="site-header">
-        <a className="brand" href="#top" aria-label="GeoSnap — на главную">
+        <a className="brand" href="/" aria-label="GeoSnap home">
           <span className="brand-mark" aria-hidden="true"><i /></span>
           <span>GeoSnap</span>
         </a>
-        <span className="scope-badge">Москва · visual retrieval</span>
+        <span className="scope-badge">Experimental · Moscow</span>
+        {TELEGRAM_BOT_URL && <a className="telegram-link" href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer"><TelegramIcon />Open Telegram</a>}
       </header>
 
-      <main id="top" className="page">
-        <section className="intro">
-          <p className="eyebrow">Визуальная геолокация</p>
-          <h1>Где сделан<br />этот снимок?</h1>
-          <p className="lede">
-            Загрузите уличную фотографию. GeoSnap сравнит её с геопривязанной галереей и покажет только подтверждённую гипотезу.
-          </p>
-          <div className="method-note">
-            <span aria-hidden="true">01</span>
-            <p>Галерея частично покрывает отдельные зоны Москвы. При слабых совпадениях сервис честно вернёт неопределённый результат.</p>
-          </div>
-        </section>
+      <main className="workspace">
+        <Suspense fallback={<section className="map-pane map-loading" role="status">Loading map…</section>}>
+          <ResultMap prediction={prediction} coverageVisible={coverageVisible} onCoverageToggle={setCoverageVisible} />
+        </Suspense>
 
-        <section className="workspace" aria-busy={isLoading}>
-          <form className="upload-card" onSubmit={onSubmit}>
-            <div className="upload-heading">
-              <div>
-                <p className="eyebrow">Новый запрос</p>
-                <h2>Выберите фотографию</h2>
-              </div>
-              <span className="step-count">JPEG · PNG · WebP</span>
+        <aside
+          className={`side-panel ${isDragging ? "is-dragging" : ""}`}
+          aria-busy={ui.phase === "processing"}
+          onDragEnter={(event) => { event.preventDefault(); setIsDragging(true); }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={(event) => { if (event.currentTarget === event.target) setIsDragging(false); }}
+          onDrop={onDrop}
+        >
+          <div className="sheet-handle" aria-hidden="true" />
+          <div className="panel-scroll">
+            <div className="panel-intro">
+              <p className="eyebrow">Visual geolocation</p>
+              <h1>Find a place from a photo</h1>
+              <p>Upload a Moscow street scene. GeoSnap returns a location only when visual evidence is strong enough.</p>
             </div>
 
-            <label className={`drop-zone ${previewUrl ? "has-preview" : ""}`}>
-              <input
-                type="file"
-                name="image"
-                aria-label="Выберите фотографию"
-                accept="image/jpeg,image/png,image/webp"
-                onChange={onFileChange}
-                disabled={isLoading}
-              />
-              {previewUrl ? (
-                <img className="query-preview" src={previewUrl} alt="Предпросмотр выбранной фотографии" />
-              ) : (
-                <span className="upload-glyph" aria-hidden="true">＋</span>
-              )}
-              <span className="drop-copy">
-                <strong>{file ? "Заменить снимок" : "Нажмите, чтобы выбрать снимок"}</strong>
-                <small>{file ? `${file.name} · ${formatBytes(file.size)}` : "Один файл с уличной сценой"}</small>
-              </span>
-            </label>
+            <form className="upload-form" onSubmit={onSubmit}>
+              <input ref={fileInput} className="visually-hidden-input" type="file" name="image" aria-label="Choose a street photo" accept="image/jpeg,image/png,image/webp" onChange={onFileChange} />
+              {ui.phase === "idle" || (ui.phase === "error" && !ui.file) ? (
+                <button className="drop-zone" type="button" onClick={openFilePicker}>
+                  <span className="upload-glyph"><UploadIcon /></span>
+                  <strong>Drop a photo or choose a file</strong>
+                  <span>JPEG, PNG or WebP · up to 10 MiB</span>
+                </button>
+              ) : file ? (
+                <PhotoSummary file={file} previewUrl={previewUrl} onReplace={openFilePicker} onRemove={removePhoto} />
+              ) : null}
 
-            {clientError && (
-              <div className="inline-error" role="alert">
-                <span aria-hidden="true">!</span>
-                <p>{clientError}</p>
-              </div>
+              {ui.phase === "selected" && (
+                <button className="primary-button" type="submit">Estimate location <span aria-hidden="true">→</span></button>
+              )}
+              {ui.phase === "processing" && (
+                <div className="processing-block" role="status">
+                  <span className="spinner" aria-hidden="true" />
+                  <div><strong>Comparing visual evidence…</strong><span>Embedding the photo, retrieving references and checking geographic agreement.</span></div>
+                </div>
+              )}
+            </form>
+
+            {ui.phase === "ok" && <SuccessResult result={ui.result} />}
+            {(ui.phase === "low_confidence" || ui.phase === "out_of_coverage") && <AbstentionResult phase={ui.phase} />}
+            {ui.phase === "error" && <ErrorResult state={ui} onRetry={() => ui.file && void submitFile(ui.file)} />}
+
+            {(ui.phase === "ok" || ui.phase === "low_confidence" || ui.phase === "out_of_coverage") && (
+              <button className="secondary-button" type="button" onClick={tryAnotherPhoto}>Try another photo</button>
             )}
 
-            <button className="submit-button" type="submit" disabled={!file || isLoading}>
-              {isLoading ? (
-                <>
-                  <span className="spinner" aria-hidden="true" />
-                  Локализуем снимок…
-                </>
-              ) : (
-                <>
-                  Найти место
-                  <span aria-hidden="true">↗</span>
-                </>
-              )}
-            </button>
-            <p className="form-footnote">
-              Анализируется содержание кадра, GPS из EXIF не используется. Фото по умолчанию не сохраняется постоянно; оценка может быть ошибочной.
-            </p>
-          </form>
-
-          {isLoading && (
-            <div className="processing-card" role="status" aria-live="polite">
-              <div className="processing-visual" aria-hidden="true"><span /></div>
-              <div>
-                <p className="eyebrow">Обработка</p>
-                <h2>Сравниваем визуальные признаки</h2>
-                <p>Строим эмбеддинг, ищем похожие эталоны и проверяем географическую согласованность.</p>
-              </div>
-            </div>
-          )}
-
-          {result && <ResultDetails result={result} />}
-        </section>
+            <footer className="privacy-note">
+              <p>GPS metadata is not used. Photos are processed in memory and are not permanently retained by default.</p>
+              <p>Coverage is incomplete and any estimate may be wrong.</p>
+            </footer>
+          </div>
+          {isDragging && <div className="drop-overlay"><UploadIcon /><strong>Drop photo to replace</strong></div>}
+        </aside>
       </main>
-
-      <footer className="site-footer">
-        <span>GeoSnap</span>
-        <p>Retrieval-based geolocation · Источники снимков указываются в результатах</p>
-      </footer>
+      <div className="sr-only" aria-live="polite" aria-atomic="true">{liveMessage}</div>
     </div>
   );
 }

@@ -32,11 +32,12 @@ MAP_TILE_URL=https://your-tile-provider.example/tiles/{z}/{x}/{y}.png?key={token
 MAP_TILE_ORIGIN=https://your-tile-provider.example
 MAP_ATTRIBUTION=Provider attribution required by contract | © OpenStreetMap contributors
 MAP_TILE_PUBLIC_PARAMETER=public-browser-parameter-if-required
+TELEGRAM_BOT_PUBLIC_URL=https://t.me/your_public_bot_name
 TELEGRAM_BOT_TOKEN=server-side-secret
 TELEGRAM_VALIDATE_ONLY=false
 ```
 
-Do not quote braces in the tile template. `MAP_TILE_ORIGIN` is the scheme and host used by the CSP. `MAP_TILE_PUBLIC_PARAMETER` is compiled into browser JavaScript and therefore cannot be a server secret. `TELEGRAM_BOT_TOKEN` remains server-side; never commit `.env`.
+Do not quote braces in the tile template. `MAP_TILE_ORIGIN` is the scheme and host used by the CSP. `MAP_TILE_PUBLIC_PARAMETER` and optional `TELEGRAM_BOT_PUBLIC_URL` are compiled into browser JavaScript and therefore cannot be server secrets. The website hides its Telegram CTA when the public URL is unset. `TELEGRAM_BOT_TOKEN` remains server-side; never commit `.env`.
 
 Provision, start, and verify:
 

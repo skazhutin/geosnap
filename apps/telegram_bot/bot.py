@@ -8,11 +8,18 @@ import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from .backend import (
     BackendClient,
@@ -24,17 +31,61 @@ from .backend import (
     InvalidBackendResponse,
 )
 from .config import BotSettings
+from .map_links import google_maps_url, yandex_maps_url
 
 logger = logging.getLogger("geosnap.telegram")
+Language = Literal["ru", "en"]
+LANGUAGE_KEY = "language"
+PENDING_PHOTO_KEY = "pending_photo"
+CHOOSE_LANGUAGE = "Выберите язык · Choose your language"
 
-START_TEXT = (
-    "GeoSnap estimates where a Moscow street photo was taken. Send a street image to try it. "
-    "Results are approximate, and GeoSnap may decline to return a location when the visual evidence is weak."
-)
-HELP_TEXT = (
-    "Send one JPEG photo as an image message. GeoSnap has experimental, incomplete coverage of Moscow street scenes "
-    "and may abstain when current references do not provide enough evidence. Photos are not permanently retained by GeoSnap."
-)
+TEXT: dict[Language, dict[str, str]] = {
+    "en": {
+        "ready": "Send a Moscow street photo. GeoSnap is experimental and may decline when evidence is weak.",
+        "help": "Send one JPEG photo as an image. Coverage of Moscow street scenes is incomplete, so GeoSnap may abstain. GPS metadata is not used and photos are not permanently retained by default. Use /language to switch language.",
+        "unsupported": "Please send a street photo as an image. Use /help for details.",
+        "processing": "Comparing visual evidence…",
+        "cooldown": "Please wait {seconds} seconds before sending another photo.",
+        "too_large": "That image is too large or unreadable. Send a valid JPEG no larger than 10 MiB.",
+        "rate_limited": "GeoSnap is receiving too many requests. Wait a moment and try again.",
+        "timeout": "Localization timed out. Please try again in a moment.",
+        "malformed": "GeoSnap returned an unexpected response. Please try again later.",
+        "unavailable": "GeoSnap is temporarily unavailable. Please try again later.",
+        "internal": "GeoSnap could not process the photo. Please try again later.",
+        "low_confidence": "Potential matches were found, but the evidence is not strong enough for a reliable location. No pin was sent. Try another angle with distinctive buildings or signs.\n\nSend another photo when ready.",
+        "out_of_coverage": "This scene is not sufficiently represented by GeoSnap’s current Moscow reference gallery. The photo itself may still be valid. No pin was sent.\n\nSend another photo when ready.",
+        "ok": "Estimated location\n{lat:.4f}, {lon:.4f}\n\nStrong visual evidence passed GeoSnap’s acceptance policy. The evidence score ({score:.3f}) is a ranking signal, not a probability.{attribution}\n\nSend another photo when ready.",
+        "google": "Google Maps",
+        "yandex": "Yandex Maps",
+    },
+    "ru": {
+        "ready": "Отправьте уличную фотографию Москвы. GeoSnap работает экспериментально и может не дать координаты при слабых совпадениях.",
+        "help": "Отправьте одно фото JPEG как изображение. Покрытие улиц Москвы неполное, поэтому GeoSnap иногда воздерживается от ответа. GPS-метаданные не используются, фото по умолчанию не сохраняются постоянно. Сменить язык: /language.",
+        "unsupported": "Отправьте уличную фотографию как изображение. Подробнее: /help.",
+        "processing": "Сравниваем визуальные признаки…",
+        "cooldown": "Подождите {seconds} секунд перед следующим фото.",
+        "too_large": "Изображение слишком большое или не читается. Отправьте корректный JPEG не больше 10 МиБ.",
+        "rate_limited": "GeoSnap получил слишком много запросов. Немного подождите и повторите попытку.",
+        "timeout": "Время локализации истекло. Повторите попытку через минуту.",
+        "malformed": "GeoSnap вернул неожиданный ответ. Повторите попытку позже.",
+        "unavailable": "GeoSnap временно недоступен. Повторите попытку позже.",
+        "internal": "Не удалось обработать фото. Повторите попытку позже.",
+        "low_confidence": "Потенциальные совпадения найдены, но данных недостаточно для надёжной точки. Метка не отправлена. Попробуйте другой ракурс с заметными зданиями или вывесками.\n\nМожно отправить следующее фото.",
+        "out_of_coverage": "Сцена недостаточно представлена в текущей эталонной галерее Москвы. Само фото может быть корректным. Метка не отправлена.\n\nМожно отправить следующее фото.",
+        "ok": "Предполагаемое место\n{lat:.4f}, {lon:.4f}\n\nСильные визуальные свидетельства прошли порог GeoSnap. Оценка ({score:.3f}) — сигнал ранжирования, а не вероятность.{attribution}\n\nМожно отправить следующее фото.",
+        "google": "Google Карты",
+        "yandex": "Яндекс Карты",
+    },
+}
+
+
+def language_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("🇷🇺 Русский", callback_data="language:ru"),
+            InlineKeyboardButton("🇬🇧 English", callback_data="language:en"),
+        ]]
+    )
 
 
 class _JsonFormatter(logging.Formatter):
@@ -57,6 +108,11 @@ def configure_logging(level: str) -> None:
     logging.basicConfig(level=level.upper(), handlers=[handler], force=True)
 
 
+def _language(context: Any) -> Language | None:
+    value = context.user_data.get(LANGUAGE_KEY)
+    return value if value in {"ru", "en"} else None
+
+
 class GeoSnapBot:
     def __init__(
         self,
@@ -73,19 +129,44 @@ class GeoSnapBot:
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        del context
+        context.user_data.pop(LANGUAGE_KEY, None)
+        context.user_data.pop(PENDING_PHOTO_KEY, None)
         if update.message:
-            await update.message.reply_text(START_TEXT)
+            await update.message.reply_text(CHOOSE_LANGUAGE, reply_markup=language_keyboard())
+
+    async def language(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.message:
+            await update.message.reply_text(CHOOSE_LANGUAGE, reply_markup=language_keyboard())
+
+    async def choose_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if query is None or query.data not in {"language:ru", "language:en"}:
+            return
+        await query.answer()
+        language: Language = "ru" if query.data.endswith(":ru") else "en"
+        context.user_data[LANGUAGE_KEY] = language
+        pending = context.user_data.pop(PENDING_PHOTO_KEY, None)
+        await query.edit_message_text(TEXT[language]["ready"])
+        if pending is not None and query.message is not None and update.effective_user is not None:
+            await self._process_photo(query.message, int(update.effective_user.id), pending, language)
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        del context
-        if update.message:
-            await update.message.reply_text(HELP_TEXT)
+        if not update.message:
+            return
+        language = _language(context)
+        if language is None:
+            await update.message.reply_text(CHOOSE_LANGUAGE, reply_markup=language_keyboard())
+            return
+        await update.message.reply_text(TEXT[language]["help"])
 
     async def unsupported(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        del context
-        if update.message:
-            await update.message.reply_text("Please send a street photo as an image. Use /help for details.")
+        if not update.message:
+            return
+        language = _language(context)
+        if language is None:
+            await update.message.reply_text(CHOOSE_LANGUAGE, reply_markup=language_keyboard())
+            return
+        await update.message.reply_text(TEXT[language]["unsupported"])
 
     async def _cooldown_remaining(self, user_id: int) -> int:
         now = self.clock()
@@ -97,21 +178,30 @@ class GeoSnapBot:
         return 0
 
     async def photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        del context
         message = update.message
         user = update.effective_user
         if message is None or user is None or not message.photo:
             return
-        wait_seconds = await self._cooldown_remaining(int(user.id))
-        if wait_seconds:
-            await message.reply_text(f"Please wait {wait_seconds} seconds before sending another photo.")
-            return
         photo = max(message.photo, key=lambda item: (item.width * item.height, item.file_size or 0))
+        language = _language(context)
+        if language is None:
+            context.user_data[PENDING_PHOTO_KEY] = photo
+            await message.reply_text(CHOOSE_LANGUAGE, reply_markup=language_keyboard())
+            return
+        await self._process_photo(message, int(user.id), photo, language)
+
+    async def _process_photo(self, message: Any, user_id: int, photo: Any, language: Language) -> None:
+        text = TEXT[language]
+        wait_seconds = await self._cooldown_remaining(user_id)
+        if wait_seconds:
+            await message.reply_text(text["cooldown"].format(seconds=wait_seconds))
+            return
         if photo.file_size and photo.file_size > self.settings.max_download_bytes:
-            await message.reply_text("That photo is too large. Please send a smaller JPEG image.")
+            await message.reply_text(text["too_large"])
             return
 
         request_id = uuid.uuid4().hex
+        progress = await message.reply_text(text["processing"])
         try:
             async with self._semaphore:
                 telegram_file = await photo.get_file()
@@ -121,65 +211,68 @@ class GeoSnapBot:
                 if len(payload) > self.settings.max_download_bytes:
                     raise BackendImageTooLarge("Telegram image exceeds bot limit")
                 result = await self.backend.localize(payload, request_id=request_id)
-            await self._render(message, result)
+            await self._render(message, progress, result, language)
             logger.info("photo localization complete", extra={"event": "photo_complete", "request_id": request_id})
         except (BackendRejectedImage, BackendImageTooLarge):
-            await message.reply_text("The image could not be read or is too large. Please send a smaller valid photo.")
+            await self._finish(progress, message, text["too_large"])
         except BackendRateLimited:
-            await message.reply_text("GeoSnap is receiving too many requests. Please wait a moment and try again.")
+            await self._finish(progress, message, text["rate_limited"])
         except BackendTimeout:
-            await message.reply_text("Localization timed out. Please try again in a moment.")
+            await self._finish(progress, message, text["timeout"])
         except InvalidBackendResponse:
-            await message.reply_text("GeoSnap returned an unexpected response. Please try again later.")
+            await self._finish(progress, message, text["malformed"])
         except BackendFailure:
-            await message.reply_text("GeoSnap is temporarily unavailable. Please try again later.")
+            await self._finish(progress, message, text["unavailable"])
         except TelegramError:
-            logger.exception(
-                "Telegram API error",
-                extra={"event": "telegram_api_error", "request_id": request_id, "error_category": "telegram_api"},
-            )
+            logger.exception("Telegram API error", extra={"event": "telegram_api_error", "request_id": request_id, "error_category": "telegram_api"})
         except Exception as exc:
-            logger.exception(
-                "unexpected bot error",
-                extra={
-                    "event": "bot_error",
-                    "request_id": request_id,
-                    "error_category": type(exc).__name__,
-                },
-            )
+            logger.exception("unexpected bot error", extra={"event": "bot_error", "request_id": request_id, "error_category": type(exc).__name__})
             try:
-                await message.reply_text("GeoSnap could not process the photo. Please try again later.")
+                await self._finish(progress, message, text["internal"])
             except TelegramError:
                 pass
 
-    async def _render(self, message: Any, result: dict[str, Any]) -> None:
+    async def _finish(self, progress: Any, message: Any, text: str, **kwargs: Any) -> None:
+        try:
+            await progress.edit_text(text, **kwargs)
+        except (AttributeError, TelegramError):
+            await message.reply_text(text, **kwargs)
+
+    async def _render(
+        self,
+        message: Any,
+        progress: Any,
+        result: dict[str, Any],
+        language: Language,
+    ) -> None:
         status = result["status"]
+        text = TEXT[language]
         if status == "low_confidence":
-            await message.reply_text(
-                "Potential matches were found, but the evidence is insufficient to provide a reliable location."
-            )
+            await self._finish(progress, message, text["low_confidence"])
             return
         if status == "out_of_coverage":
-            await message.reply_text(
-                "This scene is not sufficiently represented by GeoSnap's current Moscow reference coverage."
-            )
+            await self._finish(progress, message, text["out_of_coverage"])
             return
         prediction = result["prediction"]
         lat = float(prediction["lat"])
         lon = float(prediction["lon"])
         score = float(prediction["confidence"])
-        map_url = f"https://www.openstreetmap.org/?mlat={lat:.6f}&mlon={lon:.6f}#map=17/{lat:.6f}/{lon:.6f}"
         sources = sorted(
-            {
-                str(match.get("source"))
-                for match in result.get("matches", [])[:6]
-                if isinstance(match, dict) and match.get("source")
-            }
+            {str(match.get("source")) for match in result.get("matches", [])[:6] if isinstance(match, dict) and match.get("source")}
         )
-        attribution = f" Reference imagery: {', '.join(sources)}." if sources else ""
-        await message.reply_text(
-            f"Estimated location\n{lat:.6f}, {lon:.6f}\nEvidence score: {score:.3f} "
-            f"(ranking signal, not a probability).\nMap: {map_url}\n{attribution.strip()}"
+        names = ["Mapillary" if source.lower() == "mapillary" else "KartaView" if source.lower() == "kartaview" else source for source in sources]
+        attribution = ("\nReference imagery: " if language == "en" else "\nЭталонные снимки: ") + ", ".join(names) if names else ""
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton(text["google"], url=google_maps_url(lat, lon)),
+                InlineKeyboardButton(text["yandex"], url=yandex_maps_url(lat, lon)),
+            ]]
+        )
+        await self._finish(
+            progress,
+            message,
+            text["ok"].format(lat=lat, lon=lon, score=score, attribution=attribution),
+            reply_markup=keyboard,
         )
         await message.reply_location(latitude=lat, longitude=lon)
 
@@ -191,18 +284,14 @@ def build_application(settings: BotSettings) -> Application:
     application = Application.builder().token(settings.token).concurrent_updates(settings.max_concurrency).build()
     application.add_handler(CommandHandler("start", bot.start))
     application.add_handler(CommandHandler("help", bot.help))
+    application.add_handler(CommandHandler("language", bot.language))
+    application.add_handler(CallbackQueryHandler(bot.choose_language, pattern=r"^language:(ru|en)$"))
     application.add_handler(MessageHandler(filters.PHOTO, bot.photo))
     application.add_handler(MessageHandler(filters.ALL, bot.unsupported))
 
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         del update
-        logger.error(
-            "unhandled Telegram update error",
-            extra={
-                "event": "update_error",
-                "error_category": type(context.error).__name__ if context.error else "unknown",
-            },
-        )
+        logger.error("unhandled Telegram update error", extra={"event": "update_error", "error_category": type(context.error).__name__ if context.error else "unknown"})
 
     application.add_error_handler(error_handler)
     return application

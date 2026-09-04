@@ -42,6 +42,8 @@ data/evaluation/moscow_real_*/**
 
 apps/frontend/node_modules/
 apps/frontend/dist/
+apps/frontend/test-results/
+apps/frontend/playwright-report/
 apps/frontend/*.tsbuildinfo
 apps/frontend/vite.config.js
 apps/frontend/vite.config.d.ts
