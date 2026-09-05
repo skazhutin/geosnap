@@ -1,223 +1,87 @@
-# GeoPhoto — визуальная геолокация по фотографии
+# GeoSnap
 
-GeoPhoto — это веб-сервис, который определяет предполагаемое местоположение пользователя по фотографии городской среды без использования GPS.
+GeoSnap is an experimental visual-geolocation product for supported Moscow street scenes. A user sends a street photo from the map-first website or bilingual Telegram bot; one shared FastAPI service retrieves frozen street-view references and returns either an accepted estimate, an explicitly tentative best guess, or no point when coverage is absent.
 
-Пользователь загружает фото, система ищет наиболее похожие geotagged изображения в reference-базе Москвы, после чего возвращает:
-- точку на карте;
-- top-3 наиболее похожих reference images;
-- оценку уверенности в результате.
+GeoSnap does not claim complete Moscow coverage. In the frozen final test it answered 127/1,499 queries (8.47%, bootstrap 95% CI 7.07–9.94%). Among those accepted answers, 96.85% were within 100 m (Wilson 95% CI 92.18–98.77%). That conditional result must always be presented together with answer rate and abstention—not as “96.85% accuracy in Moscow.”
 
-## Зачем нужен проект
-
-В городской среде GPS может работать неточно или быть недоступным: во дворах, среди плотной застройки, в новых жилых комплексах, подземных переходах и других сложных локациях.
-
-Идея проекта — использовать не спутниковый сигнал, а визуальную информацию с фотографии, чтобы помочь пользователю определить, где он находится.
-
-## Что делает сервис
-
-На вход:
-- фотография городской среды.
-
-На выход:
-- предполагаемое местоположение на карте;
-- 3 наиболее похожих изображения из reference-базы;
-- confidence score;
-- краткое объяснение результата.
-
-## Как это работает
-
-Продукт построен как retrieval-based visual geolocation system.
-
-Пайплайн:
-1. Пользователь загружает изображение.
-2. Сервис выполняет preprocessing и проверку качества.
-3. Для изображения строится embedding.
-4. По embedding выполняется поиск похожих изображений в reference-базе Москвы.
-5. По найденным кандидатам вычисляется итоговая точка.
-6. Результат отображается на интерактивной карте.
-
-## Архитектура
-
-Основные компоненты:
-
-- **Frontend** — интерфейс загрузки изображения и отображения результата.
-- **Backend API** — принимает запросы, запускает inference pipeline, возвращает результат.
-- **Reference database** — geotagged изображения Москвы и их метаданные.
-- **Vector index** — индекс embeddings для быстрого nearest-neighbor поиска.
-- **Localization pipeline** — preprocessing, retrieval, оценка координат и confidence.
-
-## Стек
-
-- **Frontend:** React, MapLibre
-- **Backend:** FastAPI
-- **Database:** PostgreSQL + PostGIS
-- **Vector search:** FAISS
-- **Geospatial indexing:** H3
-- **ML / Retrieval:** DINOv2 + SALAD
-- **Reference data:** Mapillary, KartaView
-
-## Структура проекта
+## Production architecture
 
 ```text
-apps/
-  backend/        # API и серверная логика
-  frontend/       # веб-интерфейс
+Browser -> Caddy -> current static frontend
+                  -> /api/* -> FastAPI -> frozen SAGE + exact FAISS + policy
 
-ml/
-  ingestion/      # загрузка и нормализация reference-данных
-  cleaning/       # очистка и фильтрация данных
-  embeddings/     # построение embeddings
-  index/          # создание и использование FAISS индекса
-  evaluation/     # метрики и тестирование
-
-data/
-  manifests/      # manifests и служебные таблицы
-  samples/        # примеры данных
-  evaluation/     # тестовые выборки
-
-infra/
-  db/             # инициализация БД
-  scripts/        # инфраструктурные скрипты
+Telegram -> Bot API -> lightweight bot -> internal FastAPI /localize
+                                           |
+                                           +-- persistent validated artifact volume
 ```
 
-## Запуск проекта
+FastAPI is the only localization authority. The bot has no Torch, SAGE, or FAISS dependency. Production uses one CPU model worker, bounded inference concurrency and queueing, per-client rate limiting, structured logs, internal Prometheus metrics, strict readiness, same-origin browser routing, and Caddy TLS/security headers.
 
-### 1) Подготовка переменных окружения
+## Product flow
 
-Создайте `.env` в корне проекта (или отредактируйте существующий):
+- **Website:** an `ok` response shows an accepted estimate. A `low_confidence` response that contains a candidate shows a visibly distinct tentative marker, coordinates, map links, and possible visual matches with an explicit warning. Coverage gaps and defensive no-prediction responses show no point.
+- **Telegram:** accepted results retain a native location pin. Tentative results provide warning-labelled coordinates and Google/Yandex buttons but deliberately omit Telegram's authoritative-looking native pin. True no-location outcomes remain point-free.
 
-```env
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_DB=geo
-POSTGRES_PORT=5432
-DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/geo
-```
+Both experiences cover only supported Moscow street scenes and remain experimental.
 
-### 2) Запуск в Docker Compose
+The frozen model contract is `configs/moscow_production_frozen.json`, SHA-256 `9c0c38f93d4c4f76eff8ef821508da0aafdd104f04ddd932b48d2834bbd2984e`. It fixes SAGE ViT-B, source/checkpoint revisions, normalized 8,448-dimensional float32 descriptors, exact `IndexFlatIP`, K=30, the production gallery, geographic aggregation, weighted medoid, 14-feature confidence model, threshold `0.9349250249145314`, disabled reranking, and disabled approximate retrieval.
 
-Из корня репозитория:
+## Production deployment
+
+Requirements: Docker Engine/Compose v2 on Linux x86-64, a real domain for HTTPS, an approved production tile provider, and a Telegram token for live bot polling.
 
 ```bash
-docker compose up --build
+cp .env.example .env
+# Fill domain, tile-provider contract, and TELEGRAM_BOT_TOKEN.
+
+make provision-production
+make production-up
+make verify-production
 ```
 
-Сервисы будут доступны:
+The manifest at `configs/production_artifacts.json` downloads exact SAGE, checkpoint, index, metadata, gallery, smoke, and optimized reference-thumbnail artifacts from pinned official sources and the versioned GitHub artifact release. Provisioning verifies sizes, SHA-256 and archive tree hashes before atomic installation. The named volume survives restarts, and application requests never download model artifacts.
 
-- Backend API: `http://localhost:8000`
-- Backend health: `http://localhost:8000/health`
-- Frontend: `http://localhost:3000`
+For a local topology smoke without a Telegram credential, set `TELEGRAM_VALIDATE_ONLY=true`; this checks bot configuration without contacting Telegram. See [production deployment](docs/deployment.md) for the complete clean-machine procedure and HTTPS setup.
 
-Остановка:
+## Development
+
+Python 3.12 and Node 20+ are expected:
 
 ```bash
-docker compose down
+make setup
+make test
 ```
 
-### 3) Быстрая проверка старта backend + db
-
-Для автоматической проверки используйте скрипт:
+Run the backend and frontend directly when local development artifacts are available:
 
 ```bash
-infra/scripts/verify_backend_start.sh
+make api
+make frontend
 ```
 
-Скрипт:
-- поднимает `db` и `backend`;
-- ждёт успешный ответ `GET /health`;
-- печатает health-ответ;
-- по завершении останавливает и удаляет только контейнеры `db` и `backend`, не затрагивая тома и другие сервисы Compose-проекта.
-## Локальный запуск проверок CI
+The development Vite server proxies `/api` to `http://localhost:8000`. Development may use the documented OpenStreetMap fallback; production builds require explicit tile URL and attribution. The optional map coverage layer is an aggregate 20×20 grid derived from all 20,487 frozen gallery references; it is coverage evidence, not an accuracy claim. Research, ingestion, embedding, and historical evaluation targets remain in the `Makefile` but are not part of deployment.
 
-### Тесты / базовые проверки runtime
+## Service contract
 
-```bash
-cd apps/frontend
-npm ci
-npm run build
+- `GET /health`: process liveness only.
+- `GET /ready`: succeeds only when all frozen localization dependencies are loaded and valid.
+- `POST /localize`: one multipart `image` (JPEG, PNG, or single-frame WebP); returns `ok`, `low_confidence`, or `out_of_coverage` for product outcomes.
+- `GET /thumbnails/{reference_id}`: preview for a known opaque indexed reference ID.
+- `GET /metrics`: internal Prometheus endpoint, denied by the public proxy.
 
-cd ../..
-python -m pip install -r apps/backend/requirements.txt
-PYTHONPATH=apps/backend python -c "from app.main import app; assert app.title == 'GeoSnap API'"
-```
+For `low_confidence`, the API may retain the best candidate coordinates even though that candidate did not pass the frozen acceptance policy. `out_of_coverage`, and the defensive `low_confidence` case without a prediction, expose no point. The confidence value is an evidence/policy score, not a calibrated per-photo probability. Uploads are processed in memory, GPS EXIF is not used for localization, and photos are not permanently retained by default.
 
-### Smoke check запуска проекта
+## Documentation
 
-```bash
-docker compose up -d --build
-timeout 120 bash -c 'until curl -fsS http://127.0.0.1:8000/health | grep -q "\"status\":\"ok\""; do sleep 2; done'
-docker compose down -v
-```
+- [Architecture](docs/architecture.md)
+- [Deployment](docs/deployment.md)
+- [Operations](docs/operations.md)
+- [Security and privacy](docs/security.md)
+- [Telegram bot](docs/telegram_bot.md)
+- [Production web interface](docs/frontend.md)
+- [Completed frontend handoff](docs/frontend_handoff.md)
+- [Part 3 productionization report](docs/part3_productionization.md)
+- [Final QA evidence](docs/final_qa.md)
+- [Frozen localization core](docs/final_localization_core.md)
 
-## Обязательный CI check перед merge
-
-1. Откройте `Settings` → `Branches` → `Branch protection rules`.
-2. Создайте/измените правило для default branch (`main`).
-3. Включите `Require status checks to pass before merging`.
-4. Выберите check `CI / test-and-smoke`.
-
-## Этап 2: Ingestion данных (Mapillary + KartaView)
-
-Ниже — минимальная инструкция, как запустить ingestion по Москве и получить единый `manifest.parquet`.
-
-### 1) Подготовить окружение
-
-```bash
-python -m pip install -r apps/backend/requirements.txt
-python -m pip install requests pillow pandas pyarrow
-```
-
-Для Mapillary задайте токен:
-
-```bash
-export MAPILLARY_ACCESS_TOKEN=YOUR_TOKEN
-```
-
-### 2) Загрузить metadata по тайлам Москвы
-
-Mapillary (только metadata + URL):
-
-```bash
-python -m ml.ingestion.mapillary_loader --output-json data/raw/mapillary_raw.json --request-pause-sec 0.25 --request-retries 5 --backoff-sec 1.5 --max-pages-per-tile 200
-```
-
-KartaView (только metadata + URL):
-
-```bash
-python -m ml.ingestion.kartaview_loader --output-json data/raw/kartaview_raw.json --request-pause-sec 0.25 --request-retries 5 --backoff-sec 1.5 --max-pages-per-tile 200
-```
-
-> Загрузчики не скачивают изображения: они сохраняют только metadata + `image_url`, проходят пагинацию API и ограничены `--max-pages-per-tile` для защиты от бесконечных циклов.
-
-### 3) Объединить источники в единый manifest
-
-```bash
-python -m ml.ingestion.merge_sources --mapillary-json data/raw/mapillary_raw.json --kartaview-json data/raw/kartaview_raw.json --output-manifest data/raw/manifest.parquet --dedup-radius-m 7 --max-per-cluster 2
-```
-
-`merge_sources` добавляет в manifest поле `download_url` и выполняет spatial deduplication между источниками (по умолчанию радиус 7 м, максимум 2 фото на кластер).
-
-### 4) Скачать изображения из manifest
-
-```bash
-python -m ml.ingestion.download_images --manifest data/raw/manifest.parquet --errors-log data/raw/download_errors.log --retries 3
-```
-
-### 5) Проверить качество датасета
-
-```bash
-python -m ml.ingestion.validate_dataset --manifest data/raw/manifest.parquet --report data/raw/validation_report.json
-```
-
-### 6) Sanity preview (20 случайных изображений)
-
-```bash
-python -m ml.ingestion.preview --manifest data/raw/manifest.parquet --count 20 --output-image data/raw/preview.jpg
-```
-
-В результате вы получаете:
-
-- изображения в `data/raw/images/mapillary/` и `data/raw/images/kartaview/`;
-- единый `data/raw/manifest.parquet`;
-- отчёт качества `data/raw/validation_report.json`;
-- визуальный превью-лист `data/raw/preview.jpg`.
+The product UI is map-first on desktop and uses a deliberate bottom-sheet layout on mobile. Both clients preserve the backend's frozen `ok` versus `low_confidence` decision while presenting them as clearly different accepted and tentative tiers.

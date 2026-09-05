@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "protocol_id": "moscow-real-v2-20260901",
+  "status": "preregistered_before_v2_test_evaluation",
+  "dataset": {
+    "bundle": "data/evaluation/moscow_real_v2",
+    "bundle_fingerprint": "78cccca3f410f318673d99f1b3dcb303b4de678c4799821e0ff575a379248862",
+    "gallery_sha256": "7de1c9aa37326a388743e8accf411d71c07631dcc2d9e6ae6c83891d3e9e1e76",
+    "calibration_sha256": "4e92d5e229dae00ea9a7117eb3765f23247d6c77ef82a837f24c9efe6923b5a4",
+    "sealed_test_sha256": "b96cb9bb39908d357c4cf24a0a366c6e1dc1f8f953323d5ce3185cc0a8a94bdf",
+    "split_seed": 20260901,
+    "test_policy": "sealed_until_one_configuration_is_frozen_from_calibration_only"
+  },
+  "shared": {
+    "positive_distance_m": 100.0,
+    "retrieval_evaluation_top_k": 50,
+    "production_top_k_candidates": [10, 20, 50],
+    "production_top_k_rule": "choose the smallest depth retaining at least 90% of Recall@50 unless calibration localization within 100m regresses by more than 1 point versus the next depth",
+    "confidence_threshold_during_selection": 0.0,
+    "query_set": "calibration_queries.parquet",
+    "gallery_set": "gallery.parquet"
+  },
+  "baseline": {
+    "id": "baseline_megaloc_weighted_medoid",
+    "retriever": "megaloc",
+    "estimator": "weighted_medoid",
+    "query_aggregation": "single",
+    "production_eligible": true,
+    "license_status": "MIT checkpoint integration already cleared in docs/licenses.md"
+  },
+  "candidates": [
+    {
+      "id": "candidate_salad_weighted_medoid",
+      "retriever": "dinov2-salad",
+      "estimator": "weighted_medoid",
+      "query_aggregation": "single",
+      "production_eligible": false,
+      "license_status": "evaluation-only pending checkpoint and combined-application GPL compatibility review"
+    },
+    {
+      "id": "candidate_megaloc_five_crop",
+      "retriever": "megaloc",
+      "estimator": "weighted_medoid",
+      "query_aggregation": "five_crop_85",
+      "production_eligible": true,
+      "license_status": "same cleared MegaLoc artifact as baseline"
+    }
+  ],
+  "selection": {
+    "primary_metric": "recall_at_10_and_recall_at_20_within_100m",
+    "secondary_metric": "localization_accuracy_within_100m_all_queries",
+    "material_improvement_absolute": 0.05,
+    "rule": "require >=5 point Recall@10 or Recall@20 gain, positive paired-bootstrap evidence, and no unexplained major-stratum regression; freeze production only from production_eligible configurations; if none clears the gate, freeze the best justified eligible configuration without claiming material improvement"
+  },
+  "confidence": {
+    "objective": "maximize_answer_rate_subject_to_wilson_precision_floor",
+    "correct_definition": "answered localization error <= 100m",
+    "minimum_conditional_accuracy_wilson_lower_95": 0.9,
+    "calibration_only": true,
+    "no_feasible_policy": "report impossibility and use threshold 1.0 as a fail-closed abstention default"
+  },
+  "final_test": {
+    "maximum_runs": 1,
+    "query_set": "test_queries.parquet",
+    "allowed_after": "frozen runtime configuration is written and hashed"
+  }
+}

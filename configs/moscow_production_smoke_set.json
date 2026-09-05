@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "purpose": "runtime_wiring_only_not_model_selection_or_evaluation",
+  "cases": [
+    {
+      "name": "known_easy_gallery_reference",
+      "kind": "manifest_image",
+      "manifest": "data/evaluation/moscow_real_v4/gallery.parquet",
+      "query_id": "ffcd4860-f8ec-5a76-ab11-91e4f291f916",
+      "expected_statuses": ["ok"]
+    },
+    {
+      "name": "known_low_confidence_development_query",
+      "kind": "manifest_image",
+      "manifest": "data/evaluation/moscow_real_v4/development_queries.parquet",
+      "query_id": "fda6920d-4fe4-5f28-865f-a3f9525d8220",
+      "expected_statuses": ["low_confidence"]
+    },
+    {
+      "name": "unsupported_uniform_image",
+      "kind": "synthetic_rgb",
+      "width": 1280,
+      "height": 720,
+      "color": [127, 127, 127],
+      "expected_statuses": ["low_confidence", "out_of_coverage"]
+    }
+  ]
+}

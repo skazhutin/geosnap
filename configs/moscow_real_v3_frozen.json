@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "configuration_id": "moscow-real-v3-sage-k30-product-recovery",
+  "status": "frozen_before_final_test",
+  "frozen_at": "2026-09-02T20:40:17Z",
+  "dataset": {
+    "bundle": "data/evaluation/moscow_real_v3",
+    "bundle_fingerprint": "9825eaa232ae80e33fbc22c933cc2917c965a70753e76c1e5e6b7b6e15dc45b4",
+    "gallery_manifest": "data/evaluation/moscow_real_v3/gallery.parquet",
+    "gallery_sha256": "d963e5ba0458ce04b0eb29130e1c4221d3b0bbab708611aa251085d06deb26d2",
+    "development_sha256": "820be8750b1215f96eb0100f57b2b631f1057553eaa1db8706307ee94c5ad219",
+    "calibration_sha256": "62ae1e84b584bbec4a3184ab432578fd6c18af05ab45b46784fe2e89e5f0350d",
+    "sealed_test_sha256": "c8af71bf0af71ed49100628135db5e6b11049a0653e11b053adca687751344de"
+  },
+  "retriever": {
+    "name": "sage-vitb",
+    "repository": "https://github.com/chenshunpeng/SAGE",
+    "revision": "c7d6241c4885526d99d6c78c158024fc2a37097c",
+    "checkpoint": "huggingface:shunpeng/SAGE@2a2ea9964cdbdfd2211e7c625064a9d5e4678245/SAGE_No-Encoder_Vit-B.pth",
+    "checkpoint_revision": "2a2ea9964cdbdfd2211e7c625064a9d5e4678245",
+    "checkpoint_sha256": "8cfed7d4e8bbcdee4c016b29211f64ffd015c3cbae538034b3352c858af6a27e",
+    "preprocessing": "official-imagenet-normalize-then-resize-322-v1",
+    "descriptor_dimension": 8448,
+    "descriptor_dtype": "float32",
+    "normalized": true,
+    "license_audit": "official repository and model card state MIT; technical audit only, not legal advice"
+  },
+  "embedding": {
+    "directory": "data/embeddings/moscow_real_v3/sage-vitb",
+    "artifact_generation": "55ae72b887244da494b4deba37cc5307",
+    "build_metadata_sha256": "dc05ee005dcbd047d18de1bf4aac031e346cd4168f9c2e174f90ac7936f80634",
+    "input_signature": "913313c6de839e1d02b1167cbbec12d2db447010765932b61e6de2e9e1ef5b59",
+    "descriptors_sha256": "f7938d929c771e2a80ba2978c2a67928a39c86027608db4d4318542e4b3df6dd",
+    "id_mapping_sha256": "086e0a5d6518e751485e4563d99a9adbc047f9e777f8033ccbbbe1b275c1d636",
+    "reference_metadata_sha256": "ea49673791952985ef576afeed574be90ad9f553933c54ad67c5e65bd6ed2dc7",
+    "descriptor_count": 20031,
+    "failure_count": 0
+  },
+  "retrieval": {
+    "index_type": "faiss.IndexFlatIP",
+    "similarity": "cosine_via_inner_product",
+    "top_k": 30,
+    "query_aggregation": "single",
+    "reranker": null
+  },
+  "localization": {
+    "aggregation": "density_aware_mode_vote",
+    "cluster_radius_m": 100.0,
+    "max_cluster_diameter_m": 150.0,
+    "estimator": "weighted_medoid",
+    "score_temperature": 0.08,
+    "rank_decay_exponent": 0.5,
+    "good_hypothesis_separation_m": 500.0,
+    "confidence_threshold": 0.9349250249145314,
+    "safety_gates": {
+      "out_of_coverage_similarity": null,
+      "minimum_cluster_mass": null,
+      "minimum_cluster_mass_margin": null,
+      "minimum_cluster_candidates": null
+    },
+    "status_rules": {
+      "ok": "calibrated_confidence_gte_threshold_and_all_enabled_safety_gates_pass",
+      "approximate": "not_enabled_in_v3",
+      "low_confidence": "calibrated_confidence_below_threshold_or_enabled_support_gate_fails",
+      "out_of_coverage": "no_retrieval_candidates_or_enabled_out_of_coverage_gate_fails"
+    }
+  },
+  "confidence": {
+    "method": "standardized_logistic_regression_l2",
+    "target": "localization_error_m_lte_100",
+    "artifact": "configs/moscow_real_v3_confidence_model.json",
+    "artifact_sha256": "5afee6b1a1abea5c2701bc77e05d08a00b7e0a0657985567146e1de82afe5f82",
+    "model_fit_split": "development_only",
+    "threshold_selection_split": "calibration_only",
+    "operating_point": "primary_90_percent",
+    "empirical_calibration_precision_lte_100m": 0.9571428571428572,
+    "calibration_answer_rate": 0.11608623548922056,
+    "calibration_answered_count": 70,
+    "calibration_false_gt_100m_count": 3,
+    "calibration_false_gt_500m_count": 0,
+    "calibration_wilson_95": [
+      0.8814033125147246,
+      0.9853184589958887
+    ]
+  },
+  "verification": {
+    "enabled": false,
+    "backend": "opencv_sift",
+    "verify_top_k": 10,
+    "geometric_weight": 0.35
+  },
+  "safety_gates": {
+    "production_sources": [
+      "mapillary",
+      "kartaview"
+    ],
+    "exact_aoi_required": true,
+    "gallery_query_sequence_disjoint": true,
+    "uncertainty_radius_calibrated": false,
+    "final_test_maximum_runs": 1
+  },
+  "index": {
+    "directory": "data/indexes/moscow_real_v3/sage-vitb",
+    "index_id": "moscow-real-v3-sage-vitb",
+    "city_id": "moscow",
+    "artifact_generation": "8b3f7532349a400ba0ed436d3d054108",
+    "index_metadata_sha256": "2ff41a088980f8f9e959ffce9677198b15ef6d8cc27d0fec333b0dc7c8e8752f",
+    "index_faiss_sha256": "171920797fd3ca175ebeb720b9348ad82c5b44bc8dd405a8e339ab436d256896",
+    "id_mapping_sha256": "747ad2e2f83a1628c712a904feb150a48243f48cd86d85cbe9b8e811d440f4b8",
+    "reference_metadata_sha256": "dde2b76eb86227a81e7595886ead690f2edbae18aca2bf447e0696aef265e1df",
+    "local_gallery_density_100m": true,
+    "gallery_size": 20031
+  },
+  "selection_evidence": {
+    "protocol": "configs/moscow_real_v3_experiment_protocol.json",
+    "protocol_sha256": "8d7e9f30107ab0412a65a3d1b5748bcda5050f2bed9cbd340d4972e2cbfdeb56",
+    "development_grid": "data/evaluation/moscow_real_v3/reports/development_grid_all_retrievers.json",
+    "development_grid_sha256": "a3ce293f69e935488592cd310644a77847ef95487fb0538f16a73a586ba3fe74",
+    "calibration_report": "data/evaluation/moscow_real_v3/reports/sage_selected_calibration_k30_logistic.json",
+    "calibration_report_sha256": "a896bf58bb4968097a222ff18f23a8baede45ea6314686b529a24c2bf6365f99",
+    "selected_candidate": "sage-vitb-k30-density-aware-logistic",
+    "selection_scope": "development_and_calibration_only",
+    "material_improvement_gate_passed": true,
+    "material_improvement_evidence": "development raw all-query <=100m improved from unchanged MegaLoc K50 legacy 17.77% to 30.07%"
+  }
+}

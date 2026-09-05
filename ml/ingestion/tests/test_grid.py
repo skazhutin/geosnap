@@ -1,6 +1,6 @@
 import unittest
 
-from ml.ingestion.grid import build_grid, iter_moscow_tiles
+from ml.ingestion.grid import BBox, build_grid, iter_moscow_tiles
 
 
 class GridTests(unittest.TestCase):
@@ -33,6 +33,16 @@ class GridTests(unittest.TestCase):
         self.assertTrue(len(tiles) > 0)
         self.assertAlmostEqual(tiles[0].min_lat, 55.55)
         self.assertAlmostEqual(tiles[0].min_lon, 37.30)
+
+    def test_tile_has_stable_key_center_and_covering_radius(self) -> None:
+        tile = BBox(min_lat=55.55, max_lat=55.56, min_lon=37.30, max_lon=37.31)
+        self.assertEqual(tile.center, (55.555, 37.305))
+        self.assertEqual(tile.key, "55.5500000:55.5600000:37.3000000:37.3100000")
+        self.assertGreater(tile.enclosing_radius_m(), 500)
+
+    def test_invalid_world_bounds_are_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            build_grid(min_lat=-91, max_lat=-89, min_lon=0, max_lon=1)
 
 
 if __name__ == "__main__":

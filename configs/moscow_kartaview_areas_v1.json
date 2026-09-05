@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "dataset_id": "moscow_kartaview_v1",
+  "source": "street_imagery",
+  "coverage_snapshot": {
+    "endpoint": "https://api.openstreetcam.org/2.0/sequence/tiles/{x}/{y}/{z}.png",
+    "zoom": 10,
+    "observed_date": "2026-08-23",
+    "aoi": {
+      "min_lat": 55.55,
+      "max_lat": 55.95,
+      "min_lon": 37.3,
+      "max_lon": 37.9
+    }
+  },
+  "query_defaults": {
+    "radius_m": 200
+  },
+  "areas": [
+    {
+      "area_id": "central_core",
+      "description": "Central streets and mixed commercial/residential core",
+      "bounds": {"min_lat": 55.72, "max_lat": 55.8, "min_lon": 37.54, "max_lon": 37.7},
+      "points": [
+        {"lat": 55.759384, "lon": 37.6195908},
+        {"lat": 55.7211162, "lon": 37.6992416},
+        {"lat": 55.7968424, "lon": 37.5413132},
+        {"lat": 55.7952985, "lon": 37.6992416},
+        {"lat": 55.7284634, "lon": 37.5413132},
+        {"lat": 55.7211162, "lon": 37.623024}
+      ]
+    },
+    {
+      "area_id": "west_krylatskoye",
+      "description": "Western residential and major-road coverage",
+      "bounds": {"min_lat": 55.71, "max_lat": 55.8, "min_lon": 37.35, "max_lon": 37.5},
+      "points": [
+        {"lat": 55.7481781, "lon": 37.4170303},
+        {"lat": 55.7964564, "lon": 37.3511124},
+        {"lat": 55.7717454, "lon": 37.4994278},
+        {"lat": 55.7102861, "lon": 37.3655319},
+        {"lat": 55.7307833, "lon": 37.4850082},
+        {"lat": 55.7655652, "lon": 37.3682785}
+      ]
+    },
+    {
+      "area_id": "northwest_tushino",
+      "description": "North-west residential districts",
+      "bounds": {"min_lat": 55.81, "max_lat": 55.91, "min_lon": 37.39, "max_lon": 37.54},
+      "points": [
+        {"lat": 55.8604776, "lon": 37.4657822},
+        {"lat": 55.9082319, "lon": 37.5399399},
+        {"lat": 55.8161368, "lon": 37.3916245},
+        {"lat": 55.9097714, "lon": 37.4067307},
+        {"lat": 55.8107353, "lon": 37.5056076},
+        {"lat": 55.8554677, "lon": 37.5392532}
+      ]
+    },
+    {
+      "area_id": "north_vdnkh",
+      "description": "Northern residential and arterial coverage",
+      "bounds": {"min_lat": 55.8, "max_lat": 55.9, "min_lon": 37.54, "max_lon": 37.7},
+      "points": [
+        {"lat": 55.8496862, "lon": 37.5852585},
+        {"lat": 55.8943738, "lon": 37.6992416},
+        {"lat": 55.8003161, "lon": 37.6353836},
+        {"lat": 55.8989937, "lon": 37.5426865},
+        {"lat": 55.8481444, "lon": 37.6724625},
+        {"lat": 55.8989937, "lon": 37.6292038}
+      ]
+    },
+    {
+      "area_id": "east_izmailovo",
+      "description": "Eastern residential and park-edge streets",
+      "bounds": {"min_lat": 55.75, "max_lat": 55.85, "min_lon": 37.7, "max_lon": 37.86},
+      "points": [
+        {"lat": 55.8076484, "lon": 37.7733994},
+        {"lat": 55.7501104, "lon": 37.8413773},
+        {"lat": 55.7501104, "lon": 37.7067947},
+        {"lat": 55.8496862, "lon": 37.7912521},
+        {"lat": 55.7945264, "lon": 37.7013016},
+        {"lat": 55.7918243, "lon": 37.8413773}
+      ]
+    },
+    {
+      "area_id": "southeast_maryino",
+      "description": "South-east newer residential and arterial coverage",
+      "bounds": {"min_lat": 55.64, "max_lat": 55.75, "min_lon": 37.69, "max_lon": 37.86},
+      "points": [
+        {"lat": 55.7033224, "lon": 37.7775192},
+        {"lat": 55.6409803, "lon": 37.8214645},
+        {"lat": 55.7477917, "lon": 37.6910019},
+        {"lat": 55.7489511, "lon": 37.8413773},
+        {"lat": 55.6588024, "lon": 37.7397537},
+        {"lat": 55.6971313, "lon": 37.85923}
+      ]
+    },
+    {
+      "area_id": "south_chertanovo",
+      "description": "Southern residential districts",
+      "bounds": {"min_lat": 55.57, "max_lat": 55.68, "min_lon": 37.54, "max_lon": 37.69},
+      "points": [
+        {"lat": 55.6250884, "lon": 37.6154709},
+        {"lat": 55.5734925, "lon": 37.6896286},
+        {"lat": 55.6793266, "lon": 37.5639725},
+        {"lat": 55.6754549, "lon": 37.6635361},
+        {"lat": 55.5878531, "lon": 37.5419998},
+        {"lat": 55.5746571, "lon": 37.6134109}
+      ]
+    },
+    {
+      "area_id": "southwest",
+      "description": "South-west residential and mixed streets",
+      "bounds": {"min_lat": 55.6, "max_lat": 55.71, "min_lon": 37.38, "max_lon": 37.55},
+      "points": [
+        {"lat": 55.6464052, "lon": 37.4740219},
+        {"lat": 55.7091256, "lon": 37.3888779},
+        {"lat": 55.7037093, "lon": 37.5488663},
+        {"lat": 55.6157829, "lon": 37.3813248},
+        {"lat": 55.6006567, "lon": 37.5056076},
+        {"lat": 55.6611265, "lon": 37.545433}
+      ]
+    }
+  ]
+}

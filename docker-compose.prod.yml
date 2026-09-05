@@ -1,0 +1,151 @@
+name: geosnap-production
+
+x-logging: &production-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  artifact-provisioner:
+    profiles: ["tools"]
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    user: "0:0"
+    command:
+      - python
+      - -m
+      - ml.artifacts.ensure_production_artifacts
+      - --manifest
+      - /app/configs/production_artifacts.json
+      - --include-optional
+    environment:
+      GEOSNAP_ARTIFACT_DIR: ${GEOSNAP_ARTIFACT_DIR:-/var/lib/geosnap/artifacts}
+    volumes:
+      - production_artifacts:${GEOSNAP_ARTIFACT_DIR:-/var/lib/geosnap/artifacts}
+    networks: [artifact_egress]
+    restart: "no"
+    logging: *production-logging
+
+  backend:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment:
+      GEOSNAP_ENV: production
+      GEOSNAP_APP_VERSION: ${GEOSNAP_APP_VERSION:-local}
+      GEOSNAP_RUNTIME_CONFIG: /app/configs/moscow_production_frozen.json
+      GEOSNAP_ARTIFACT_MANIFEST: /app/configs/production_artifacts.json
+      GEOSNAP_ARTIFACT_DIR: ${GEOSNAP_ARTIFACT_DIR:-/var/lib/geosnap/artifacts}
+      TORCH_DEVICE: cpu
+      FAISS_PROCESS_ISOLATION: "false"
+      EMBEDDING_BATCH_SIZE: "1"
+      OMP_NUM_THREADS: ${BACKEND_CPU_THREADS:-4}
+      MKL_NUM_THREADS: ${BACKEND_CPU_THREADS:-4}
+      CORS_ORIGINS: ""
+      TRUST_FORWARDED_FOR: "true"
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-10485760}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-25000000}
+      MAX_IMAGE_DIMENSION: ${MAX_IMAGE_DIMENSION:-10000}
+      MULTIPART_OVERHEAD_BYTES: ${MULTIPART_OVERHEAD_BYTES:-262144}
+      UPLOAD_TIMEOUT_SECONDS: ${UPLOAD_TIMEOUT_SECONDS:-15}
+      LOCALIZATION_TIMEOUT_SECONDS: ${LOCALIZATION_TIMEOUT_SECONDS:-30}
+      LOCALIZATION_CONCURRENCY: ${LOCALIZATION_CONCURRENCY:-1}
+      LOCALIZATION_QUEUE_LIMIT: ${LOCALIZATION_QUEUE_LIMIT:-2}
+      LOCALIZATION_QUEUE_TIMEOUT_SECONDS: ${LOCALIZATION_QUEUE_TIMEOUT_SECONDS:-5}
+      LOCALIZATION_RATE_PER_MINUTE: ${LOCALIZATION_RATE_PER_MINUTE:-12}
+      LOCALIZATION_RATE_BURST: ${LOCALIZATION_RATE_BURST:-3}
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      READINESS_CHECK_DATABASE: "false"
+    volumes:
+      - production_artifacts:${GEOSNAP_ARTIFACT_DIR:-/var/lib/geosnap/artifacts}:ro
+    networks: [internal]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    logging: *production-logging
+
+  proxy:
+    build:
+      context: .
+      dockerfile: infra/caddy/Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_MAP_TILE_URL: ${MAP_TILE_URL:?set MAP_TILE_URL to a production tile provider}
+        VITE_MAP_ATTRIBUTION: ${MAP_ATTRIBUTION:?set MAP_ATTRIBUTION}
+        VITE_MAP_PUBLIC_PARAMETER: ${MAP_TILE_PUBLIC_PARAMETER:-}
+        VITE_TELEGRAM_BOT_URL: ${TELEGRAM_BOT_PUBLIC_URL:-}
+    environment:
+      GEOSNAP_SCHEME: ${GEOSNAP_SCHEME:-http}
+      GEOSNAP_DOMAIN: ${GEOSNAP_DOMAIN:-localhost}
+      GEOSNAP_TILE_ORIGIN: ${MAP_TILE_ORIGIN:?set MAP_TILE_ORIGIN for CSP}
+      PROXY_MAX_REQUEST_BYTES: ${PROXY_MAX_REQUEST_BYTES:-11000000}
+      PROXY_BACKEND_TIMEOUT: ${PROXY_BACKEND_TIMEOUT:-35s}
+    ports:
+      - "${GEOSNAP_HTTP_PORT:-8080}:80"
+      - "${GEOSNAP_HTTPS_PORT:-8443}:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge, internal]
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    logging: *production-logging
+
+  telegram-bot:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: apps/telegram_bot/Dockerfile
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BACKEND_URL: http://backend:8000
+      TELEGRAM_USER_COOLDOWN_SECONDS: ${TELEGRAM_USER_COOLDOWN_SECONDS:-8}
+      TELEGRAM_MAX_CONCURRENCY: ${TELEGRAM_MAX_CONCURRENCY:-2}
+      TELEGRAM_MAX_DOWNLOAD_BYTES: ${TELEGRAM_MAX_DOWNLOAD_BYTES:-10485760}
+      TELEGRAM_BACKEND_TIMEOUT_SECONDS: ${TELEGRAM_BACKEND_TIMEOUT_SECONDS:-30}
+      TELEGRAM_VALIDATE_ONLY: ${TELEGRAM_VALIDATE_ONLY:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks: [edge, internal]
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    logging: *production-logging
+
+volumes:
+  production_artifacts:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+  internal:
+    internal: true
+  artifact_egress:

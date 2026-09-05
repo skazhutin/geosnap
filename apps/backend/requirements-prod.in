@@ -1,0 +1,9 @@
+fastapi==0.141.1
+faiss-cpu==1.15.0
+numpy==2.5.2
+pillow==12.3.0
+prettytable==3.18.0
+prometheus-client==0.26.0
+torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2
+torchvision @ https://download-r2.pytorch.org/whl/cpu/torchvision-0.28.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=b545d46f4d2f9d30381281cf22874bfe1d32a8a7b0ee8396fccde89f30c6a9d9
+uvicorn==0.52.3

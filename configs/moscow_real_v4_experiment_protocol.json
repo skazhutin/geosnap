@@ -1,0 +1,159 @@
+{
+  "schema_version": 1,
+  "protocol_id": "moscow-real-v4-final-localization-policy-20260903",
+  "status": "preregistered_before_v4_policy_selection_and_calibration_access",
+  "historical_experiments": {
+    "immutable": [
+      "moscow_real_v1",
+      "moscow_real_v2",
+      "moscow_real_v3"
+    ],
+    "opened_test_use": "historical reporting and post-v4 qualitative review only",
+    "selection_use_forbidden": true
+  },
+  "dataset": {
+    "bundle": "data/evaluation/moscow_real_v4",
+    "bundle_fingerprint": "0eb03372570a8cd4c703aa07789065717027ba7223024d8e4361d74faa1b489f",
+    "gallery_sha256": "ff7cbc7e7147226e5aed41c4ccb1048d4bc17fec965c7fc5e0cb94e5bb1c35da",
+    "development_sha256": "17d0f339d3a34d4826a2d7cf337861a566a48b23d76fb1353919d9733fbcf64d",
+    "calibration_sha256": "e2e088d5fecabc8b95c29fffcf91d0248355fafc0d0cc312a0100ab7eee4e64d",
+    "sealed_test_sha256": "332567068c27cd58eb7951823c3102d05cf7263abb152ffb49db4e280be0e34f",
+    "split_audit_sha256": "977a4b7846832c1665ef02a8882cee4f932daa0193d470e7497b74373e9a3fbf",
+    "test_seal_sha256": "b23ee266f9dcca876ac36b08205da123bc2f45422427df6a3c689620ee6cd72d",
+    "counts": {
+      "gallery": 20487,
+      "development": 751,
+      "calibration": 750,
+      "sealed_test": 1499
+    },
+    "split_seed": 20260903,
+    "historical_query_sequence_exclusion_count": 2991
+  },
+  "retrieval_core": {
+    "default": "exact_part_2_5_sage_vitb_contract",
+    "retriever": "sage-vitb",
+    "repository_revision": "c7d6241c4885526d99d6c78c158024fc2a37097c",
+    "checkpoint_revision": "2a2ea9964cdbdfd2211e7c625064a9d5e4678245",
+    "checkpoint_sha256": "8cfed7d4e8bbcdee4c016b29211f64ffd015c3cbae538034b3352c858af6a27e",
+    "descriptor_dimension": 8448,
+    "normalization": "l2",
+    "index": "faiss.IndexFlatIP",
+    "k_sanity_grid": [
+      15,
+      20,
+      30,
+      40,
+      50
+    ],
+    "k_default": 30,
+    "k_change_rule": "change only for a clear development product/safety Pareto improvement"
+  },
+  "aggregation": {
+    "default": "density_aware_mode_vote",
+    "candidates": [
+      "density_aware_mode_vote",
+      "rank_weighted_vote",
+      "sequence_deduplicated_vote",
+      "legacy_weighted_medoid"
+    ],
+    "coordinate_estimator": "weighted_medoid"
+  },
+  "confidence_architectures": [
+    {
+      "id": "existing_correctness_logistic",
+      "targets": [
+        "error_lte_100m"
+      ],
+      "feature_schema": "part_2_5_14_features"
+    },
+    {
+      "id": "expanded_correctness_plus_catastrophic_risk_logistic",
+      "targets": [
+        "error_lte_100m",
+        "error_gt_500m"
+      ],
+      "feature_schema": "final_interpretable_retrieval_geographic_independence_features"
+    },
+    {
+      "id": "multinomial_risk_logistic",
+      "targets": [
+        "error_lte_100m",
+        "error_100_to_500m",
+        "error_gt_500m"
+      ],
+      "feature_schema": "final_interpretable_retrieval_geographic_independence_features"
+    }
+  ],
+  "development": {
+    "metrics_must_be_out_of_fold": true,
+    "cross_validation": "stratified geographically grouped 5-fold",
+    "random_seed": 20260903,
+    "selects": [
+      "feature schema",
+      "confidence architecture",
+      "K",
+      "aggregation",
+      "catastrophic-risk model",
+      "candidate safety-gate family"
+    ],
+    "does_not_select": "final numeric correctness/risk operating thresholds"
+  },
+  "calibration": {
+    "purpose": "numeric threshold selection only after architecture freeze",
+    "may_not_fit": [
+      "coefficients",
+      "standardization",
+      "feature calculations",
+      "model family",
+      "K",
+      "aggregation",
+      "gate family"
+    ]
+  },
+  "operating_point_order": {
+    "primary": {
+      "objective": "maximize_answer_rate",
+      "minimum_empirical_precision_lte_100m": 0.9,
+      "maximum_catastrophic_rate_per_answer": 0.01,
+      "minimum_answered": 40
+    },
+    "secondary": {
+      "objective": "maximize_answer_rate",
+      "minimum_empirical_precision_lte_100m": 0.9,
+      "maximum_catastrophic_rate_per_answer": 0.02,
+      "minimum_answered": 40
+    },
+    "tertiary": {
+      "objective": "maximize_mean_utility",
+      "weights": {
+        "accepted_error_lte_100m": 1.0,
+        "abstention": 0.0,
+        "accepted_error_100_to_500m": -1.5,
+        "accepted_error_gt_500m": -8.0
+      },
+      "sensitivity_weights": [
+        {
+          "accepted_error_100_to_500m": -1.0,
+          "accepted_error_gt_500m": -5.0
+        },
+        {
+          "accepted_error_100_to_500m": -2.0,
+          "accepted_error_gt_500m": -12.0
+        }
+      ],
+      "minimum_answered": 40
+    }
+  },
+  "stratum_policy": {
+    "hard_veto_minimum_answered": 30,
+    "small_strata": "report as uncertain",
+    "provider_precision_floor": 0.8,
+    "regional_precision_floor": 0.75
+  },
+  "final_test": {
+    "maximum_openings": 1,
+    "transaction": "exact Part 2.5 policy and frozen final candidate evaluated together",
+    "allowed_after": "both policies, artifacts, thresholds, gates, and frozen config are hash-bound",
+    "post_test_tuning": "forbidden"
+  }
+}

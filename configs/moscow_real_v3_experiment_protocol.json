@@ -1,0 +1,269 @@
+{
+  "schema_version": 1,
+  "protocol_id": "moscow-real-v3-product-recovery-20260902",
+  "status": "preregistered_before_v3_development_evaluation",
+  "protocol_amendments": [
+    {
+      "date": "2026-09-02",
+      "reason": "user-requested retriever-search expansion after SAGE evaluation and before calibration selection or final-test opening",
+      "scope": "add SelaVPR++ global and official two-stage variants; screen CricaVPR for an independent-descriptor serving contract before any costly extraction",
+      "selection_rules_changed": false,
+      "sealed_test_remained_unopened": true
+    }
+  ],
+  "historical_experiments": {
+    "immutable": [
+      "moscow_real_v1",
+      "moscow_real_v2"
+    ],
+    "v2_final_test_status": "burned_and_excluded_from_all_v3_selection",
+    "v2_results_permitted_use": "historical_reporting_only"
+  },
+  "dataset": {
+    "bundle": "data/evaluation/moscow_real_v3",
+    "bundle_fingerprint": "9825eaa232ae80e33fbc22c933cc2917c965a70753e76c1e5e6b7b6e15dc45b4",
+    "gallery_sha256": "d963e5ba0458ce04b0eb29130e1c4221d3b0bbab708611aa251085d06deb26d2",
+    "development_sha256": "820be8750b1215f96eb0100f57b2b631f1057553eaa1db8706307ee94c5ad219",
+    "calibration_sha256": "62ae1e84b584bbec4a3184ab432578fd6c18af05ab45b46784fe2e89e5f0350d",
+    "sealed_test_sha256": "c8af71bf0af71ed49100628135db5e6b11049a0653e11b053adca687751344de",
+    "split_seed": 20260902,
+    "counts": {
+      "gallery": 20031,
+      "development": 602,
+      "calibration": 603,
+      "sealed_test": 1195
+    },
+    "selection_policy": "pipeline and confidence features selected with development cross-validation; final model fit on development only; thresholds and operating point selected on calibration only",
+    "test_policy": "sealed until configs/moscow_real_v3_frozen.json exists and passes integrity checks; baseline and frozen candidate evaluated together in one authorized opening"
+  },
+  "retrievers": [
+    {
+      "id": "megaloc",
+      "role": "unchanged_baseline_and_candidate",
+      "production_eligible": true,
+      "revision": "5fe0dd697c4a70ba3e23607f6716ab3c606b16db",
+      "checkpoint_revision": "37bb43d65dd6388d1578052de5eb0bcdceb497e7",
+      "checkpoint_sha256": "d4f9f2bcb60018f91eb6a8e061ed054fd55654e10c2569cf13841ea986ffb4f8"
+    },
+    {
+      "id": "dinov2-salad",
+      "role": "evaluation_only_technical_probe",
+      "production_eligible": false,
+      "revision": "6aede13a3f6c25750bf7fde10209c06cb73060bb",
+      "checkpoint_sha256": "6b3f1720954293e83da6966c5cfcfc6713200d7fefadcca76fc51aeb80b3cada",
+      "license_status": "GPL-3.0 repository and checkpoint has no separately stated terms; combined production deployment remains compliance-ambiguous"
+    },
+    {
+      "id": "sage-vitb",
+      "role": "additional_deployable_candidate",
+      "production_eligible": true,
+      "revision": "c7d6241c4885526d99d6c78c158024fc2a37097c",
+      "checkpoint_revision": "2a2ea9964cdbdfd2211e7c625064a9d5e4678245",
+      "checkpoint_sha256": "8cfed7d4e8bbcdee4c016b29211f64ffd015c3cbae538034b3352c858af6a27e",
+      "license_status": "official implementation and Hugging Face model card both state MIT; final report remains a technical audit, not legal advice"
+    },
+    {
+      "id": "selavprplusplus-base",
+      "role": "additional_deployable_candidate",
+      "production_eligible": true,
+      "revision": "56bd921cbd3d53e9c5f91d0aafff147f95fb362a",
+      "checkpoint_release": "SelaVPR++",
+      "checkpoint_sha256": "b048490dbd1c27dee67fce6faaec7bec267d19a044c85877af94b8588e596a62",
+      "descriptor_dim": 2048,
+      "license_status": "official repository is MIT; checkpoint is an official asset of that repository's release with no contradictory asset-specific terms; technical audit only, not legal advice"
+    },
+    {
+      "id": "selavprplusplus-base-rerank",
+      "role": "official_two_stage_ablation",
+      "production_eligible": true,
+      "revision": "56bd921cbd3d53e9c5f91d0aafff147f95fb362a",
+      "checkpoint_release": "SelaVPR++",
+      "checkpoint_sha256": "da31138202b9a746916588ecd97499a56bae304e61444a50d6f34761377cdcbf",
+      "descriptor_dim": 2560,
+      "retrieval_contract": "512-D binary retrieval top-100 followed by 2048-D float reranking; K grid is applied after reranking",
+      "license_status": "same official MIT repository/release finding as the global checkpoint; technical audit only, not legal advice"
+    },
+    {
+      "id": "cricavpr",
+      "role": "preliminary_deployability_screen",
+      "production_eligible": false,
+      "revision": "f53e941d34a559ca8432960bc2c29ef22f940c97",
+      "checkpoint_release": "v1.0",
+      "checkpoint_sha256": "e3102d28e07df60b9f82003e96b44feb3debe1827f7d90143180174c3ad8e046",
+      "descriptor_dim": 10752,
+      "screening_result": "rejected before full extraction because the official cross-image encoder makes a descriptor depend on unrelated batch neighbors, violating independent query/index reproducibility",
+      "license_status": "official repository is MIT and checkpoint is an official release asset; technical audit only, not legal advice"
+    }
+  ],
+  "retrieval": {
+    "positive_distance_thresholds_m": [
+      50.0,
+      100.0
+    ],
+    "report_at_k": [
+      1,
+      5,
+      10,
+      20,
+      50
+    ],
+    "production_k_candidates": [
+      5,
+      10,
+      15,
+      20,
+      30,
+      50
+    ],
+    "positive_rank_percentiles": [
+      0.5,
+      0.75,
+      0.9
+    ],
+    "selection_rule": "never select K from retrieval recall alone; compare full raw-localization and abstained-product utility"
+  },
+  "aggregation": {
+    "shared": {
+      "cluster_radius_m": 100.0,
+      "max_cluster_diameter_m": 150.0,
+      "score_temperature": 0.08,
+      "coordinate_estimator": "weighted_medoid"
+    },
+    "candidates": [
+      {
+        "id": "legacy_weighted_medoid",
+        "description": "unchanged v2 evidence, compact clustering, cluster mass ordering, and weighted medoid"
+      },
+      {
+        "id": "rank_weighted_vote",
+        "rank_decay_exponent": 0.5,
+        "sequence_deduplication": false,
+        "density_aware": false
+      },
+      {
+        "id": "sequence_deduplicated_vote",
+        "rank_decay_exponent": 0.5,
+        "sequence_contribution": "maximum candidate evidence per provider-scoped source sequence",
+        "density_aware": false
+      },
+      {
+        "id": "density_aware_mode_vote",
+        "rank_decay_exponent": 0.5,
+        "sequence_contribution": "maximum candidate evidence per provider-scoped source sequence",
+        "cluster_score": "deduplicated_evidence * (1 + 0.10*log1p(independent_sequences-1) + 0.10*(provider_count-1)) * exp(-p90_spread_m/500) / sqrt(max(local_gallery_density_100m,1))",
+        "coordinate_weights": "candidate evidence divided by candidates from the same provider-scoped sequence"
+      }
+    ],
+    "diagnostics": [
+      "geographic_cluster_count",
+      "winning_cluster_mass",
+      "correct_cluster_rank",
+      "competing_cluster_separation_m",
+      "correct_cluster_retrieved_but_lost",
+      "singleton_false_cluster",
+      "multimodal_case",
+      "independent_sequence_count",
+      "provider_count",
+      "viewpoint_bucket_count"
+    ]
+  },
+  "hard_gate_audit": {
+    "gates": [
+      "out_of_coverage_similarity",
+      "minimum_cluster_mass",
+      "minimum_cluster_mass_margin",
+      "minimum_cluster_candidates",
+      "confidence_threshold"
+    ],
+    "report": [
+      "sole_rejections",
+      "correct_localizations_rejected",
+      "incorrect_localizations_rejected",
+      "precision_gain",
+      "answer_rate_loss"
+    ],
+    "candidate_policy": "retain only a hard gate whose development evidence demonstrates safety gain not captured by the calibrated confidence model"
+  },
+  "confidence": {
+    "label": "raw_localization_error_m_lte_100",
+    "pixel_features_forbidden": true,
+    "feature_set": [
+      "top1_similarity",
+      "top1_top2_similarity_margin",
+      "winning_cluster_score",
+      "second_cluster_score",
+      "geographic_mode_margin",
+      "independent_sequence_count",
+      "provider_diversity",
+      "winning_candidate_count",
+      "winning_cluster_p90_spread_m",
+      "best_second_mode_separation_m",
+      "local_gallery_density_100m",
+      "best_winner_rank",
+      "top1_agrees_with_winner",
+      "cross_provider_winner_evidence"
+    ],
+    "models": [
+      "legacy_handwritten_score",
+      "standardized_logistic_regression_l2",
+      "isotonic_calibration_of_cross_validated_logistic_score"
+    ],
+    "development_validation": {
+      "method": "stratified_group_5_fold_cross_validation",
+      "groups": "evaluation_geo_group_id",
+      "random_seed": 20260902
+    },
+    "final_fit": "selected model fit on development only; calibration labels are never used to fit coefficients or calibrator shape",
+    "minimum_answered_calibration_examples": 40,
+    "target_answered_or_eligible_calibration_examples": 100
+  },
+  "operating_points": {
+    "primary": {
+      "objective": "maximize_answer_rate",
+      "minimum_empirical_conditional_accuracy_lte_100m": 0.9,
+      "maximum_answered_error_gt_500m_rate": 0.01,
+      "minimum_answered_examples": 40,
+      "provider_floor": 0.8,
+      "regional_floor": 0.75,
+      "stratum_floor_applies_when_answered_n_gte": 20
+    },
+    "secondary": {
+      "label": "explicit_85_percent_precision_fallback",
+      "objective": "maximize_answer_rate",
+      "minimum_empirical_conditional_accuracy_lte_100m": 0.85,
+      "maximum_answered_error_gt_500m_rate": 0.01,
+      "minimum_answered_examples": 40,
+      "provider_floor": 0.8,
+      "regional_floor": 0.75,
+      "stratum_floor_applies_when_answered_n_gte": 20
+    },
+    "wilson_intervals": "report_only_not_an_absolute_kill_switch",
+    "two_tier_statuses": "evaluate high-confidence ok plus separately calibrated approximate only if tier labeling adds utility without misstating precision"
+  },
+  "statistics": {
+    "confidence_level": 0.95,
+    "bootstrap_resamples": 10000,
+    "bootstrap_seed": 20260902,
+    "paired_bootstrap_primary": "all_query_accuracy_lte_100m",
+    "major_stratum_minimum_n_for_hard_candidate_veto": 30,
+    "smaller_strata": "report as uncertain; no automatic veto"
+  },
+  "material_product_improvement_gate": {
+    "require_one": [
+      "all_query_accuracy_lte_100m_improves_by_at_least_0.05_absolute",
+      "answer_rate_at_primary_precision_improves_by_at_least_0.05_absolute",
+      "answer_rate_improves_by_at_least_25_percent_relative_while_precision_is_within_0.02"
+    ],
+    "also_require": [
+      "no_statistically_credible_catastrophic_regression_in_a_major_provider_or_region_stratum",
+      "latency_acceptable_for_interactive_web_use"
+    ]
+  },
+  "final_test": {
+    "maximum_openings": 1,
+    "baseline": "unchanged_megaloc_legacy_weighted_medoid",
+    "candidate": "selected_production_eligible_configuration",
+    "allowed_after": "gallery, index, model hashes, top-K, aggregation, confidence artifact, thresholds, status rules, and safety gates are frozen and configs/moscow_real_v3_frozen.json is hash-verified",
+    "post_test_tuning": "forbidden"
+  }
+}

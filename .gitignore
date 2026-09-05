@@ -1,10 +1,49 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.playwright-cli/
 *.pyc
+.DS_Store
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Runtime logs and caches
+*.log
+logs/
+.cache/
+model_cache/
+data/model-cache/
+data/models/**
+
+# Downloaded or generated data (small checked-in fixtures stay under tests/)
+data/raw/**
+!data/raw/.gitkeep
+data/citywide/
+data/processed/**
+!data/processed/.gitkeep
+data/embeddings/**
+data/indexes/**
+data/evaluation/generated/**
+data/evaluation/moscow_real_*/**
+*.faiss
+*.index
+*.npy
+*.npz
+*.parquet
+*.ckpt
+*.pth
+*.pt
+*.safetensors
 
 apps/frontend/node_modules/
 apps/frontend/dist/
+apps/frontend/test-results/
+apps/frontend/playwright-report/
 apps/frontend/*.tsbuildinfo
 apps/frontend/vite.config.js
 apps/frontend/vite.config.d.ts
