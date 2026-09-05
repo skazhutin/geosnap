@@ -127,10 +127,14 @@ test("required desktop and mobile viewports keep a usable map and panel", async 
   ]) {
     await page.setViewportSize(viewport);
     await page.goto("/");
-    await expect(page.locator(".map-pane")).toBeVisible();
+    const mapPane = page.locator(".map-pane");
+    await expect(mapPane).toBeVisible();
+    // Suspense replaces the loading shell once the lazy MapLibre chunk resolves.
+    // Wait for the final canvas before reading the parent geometry.
+    await expect(page.getByTestId("map-canvas")).toBeVisible();
     await expect(page.locator(".side-panel")).toBeVisible();
     const panelBox = await page.locator(".side-panel").boundingBox();
-    const mapBox = await page.locator(".map-pane").boundingBox();
+    const mapBox = await mapPane.boundingBox();
     expect(panelBox).not.toBeNull();
     expect(mapBox).not.toBeNull();
     if (viewport.mobile) {
