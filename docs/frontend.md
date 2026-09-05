@@ -6,9 +6,13 @@ GeoSnap ships a map-first single-page interface. The map occupies the main viewp
 
 The explicit UI state machine is `idle → selected → processing → ok | low_confidence | out_of_coverage | error`. JPEG, PNG and WebP uploads are accepted up to 10 MiB. Selection, drag/drop, replacement and removal all use the same validation path. Choosing a new file aborts the active request and invalidates its sequence number, so a stale response cannot replace newer state. Blob preview URLs are revoked on replacement and unmount.
 
-`ok` shows one estimated-location marker, coordinates rounded to four decimals, copy feedback, tested Google Maps and Yandex Maps links, the retained query preview, and the strongest three references with optional expansion. The evidence score is a ranking signal, never a probability. The backend uncertainty field is intentionally not visualized because it is not calibrated.
+`ok` is the accepted tier. It shows one accepted estimated-location marker, coordinates rounded to four decimals, copy feedback, tested Google Maps and Yandex Maps links, the retained query preview, and the strongest three references with optional expansion. The evidence score is a ranking signal, never a probability. The backend uncertainty field is intentionally not visualized because it is not calibrated.
 
-`low_confidence` and `out_of_coverage` retain the photo and provide a retry path, but show no marker, coordinates or external map links. Errors distinguish client validation, invalid backend input, readiness, capacity, rate limiting with `Retry-After`, timeout, network failure, malformed response and internal failure.
+`low_confidence` with a finite prediction is the tentative tier: it shows an amber dashed marker, four-decimal tentative coordinates, Google/Yandex links, the strongest three possible visual matches with optional expansion, and a persistent warning that the best guess is below the frozen acceptance threshold and may be significantly wrong. Wording, iconography, panel treatment, marker style, and accessible labels distinguish it from `ok`; the UI does not rely on color alone. Its optional explanation is generic and does not pretend to diagnose a particular model failure.
+
+`low_confidence` without a prediction and `out_of_coverage` retain the photo and retry path but show no marker, coordinates or external point links. Errors distinguish client validation, invalid backend input, readiness, capacity, rate limiting with `Retry-After`, timeout, network failure, malformed response and internal failure.
+
+The tentative tier is a product presentation of the backend's existing best candidate, not a relaxed acceptance policy. Raw frozen-v4 localization was within 100 m for 29.42% of all eligible queries, so tentative results are exploratory and may be far from the true location. They must never be mixed into the published strict accepted-answer metrics.
 
 ## Map and coverage
 
@@ -46,4 +50,4 @@ npm --prefix apps/frontend run build
 npm --prefix apps/frontend run test:e2e
 ```
 
-Playwright runs the map shell, accepted result, both abstentions and coverage in Chromium, WebKit and a mobile Chromium viewport.
+Playwright runs the map shell, accepted result, tentative result, true no-location outcomes, and coverage in Chromium, WebKit and a mobile Chromium viewport.

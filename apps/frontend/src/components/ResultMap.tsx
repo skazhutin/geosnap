@@ -10,6 +10,7 @@ import { LayersIcon, LocateIcon } from "./Icons";
 
 interface ResultMapProps {
   prediction: Prediction | null;
+  estimateTier: "accepted" | "tentative" | null;
   coverageVisible: boolean;
   onCoverageToggle: (visible: boolean) => void;
 }
@@ -38,7 +39,7 @@ function prefersReducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-export function ResultMap({ prediction, coverageVisible, onCoverageToggle }: ResultMapProps) {
+export function ResultMap({ prediction, estimateTier, coverageVisible, onCoverageToggle }: ResultMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
@@ -84,13 +85,14 @@ export function ResultMap({ prediction, coverageVisible, onCoverageToggle }: Res
     markerRef.current?.remove();
     markerRef.current = null;
     if (!map || !prediction) return;
+    const tentative = estimateTier === "tentative";
     const markerElement = document.createElement("div");
-    markerElement.className = "estimate-marker";
+    markerElement.className = `estimate-marker estimate-marker--${tentative ? "tentative" : "accepted"}`;
     markerElement.tabIndex = 0;
     markerElement.setAttribute("role", "img");
     markerElement.setAttribute(
       "aria-label",
-      `Estimated location ${prediction.lat.toFixed(4)}, ${prediction.lon.toFixed(4)}`,
+      `${tentative ? "Tentative low-confidence estimate" : "Accepted estimated location"} ${prediction.lat.toFixed(4)}, ${prediction.lon.toFixed(4)}`,
     );
     markerElement.innerHTML = "<span></span>";
     markerRef.current = new maplibregl.Marker({ element: markerElement, anchor: "center" })
@@ -106,7 +108,7 @@ export function ResultMap({ prediction, coverageVisible, onCoverageToggle }: Res
     };
     if (prefersReducedMotion()) map.jumpTo(camera);
     else map.easeTo({ ...camera, duration: 1200, essential: false });
-  }, [prediction]);
+  }, [estimateTier, prediction]);
 
   useEffect(() => {
     if (!coverageVisible || coverage || coverageError) return undefined;
@@ -204,7 +206,7 @@ export function ResultMap({ prediction, coverageVisible, onCoverageToggle }: Res
         data-testid="map-canvas"
         role="application"
         aria-label={prediction
-          ? `Map centered on estimated location ${prediction.lat.toFixed(4)}, ${prediction.lon.toFixed(4)}`
+          ? `Map centered on ${estimateTier === "tentative" ? "tentative low-confidence estimate" : "accepted estimated location"} ${prediction.lat.toFixed(4)}, ${prediction.lon.toFixed(4)}`
           : "Map of Moscow. No estimate yet."}
       />
       <div className="map-actions" aria-label="Map controls">
@@ -242,7 +244,9 @@ export function ResultMap({ prediction, coverageVisible, onCoverageToggle }: Res
         </div>
       )}
       <span className="sr-only" aria-live="polite">
-        {prediction ? `Estimated location shown at ${prediction.lat.toFixed(4)}, ${prediction.lon.toFixed(4)}.` : ""}
+        {prediction
+          ? `${estimateTier === "tentative" ? "Tentative low-confidence estimate" : "Accepted estimated location"} shown at ${prediction.lat.toFixed(4)}, ${prediction.lon.toFixed(4)}.`
+          : ""}
       </span>
     </section>
   );

@@ -8,6 +8,7 @@ from apps.telegram_bot.backend import (
     BackendRateLimited,
     BackendTimeout,
     InvalidBackendResponse,
+    validate_product_response,
 )
 
 
@@ -64,3 +65,23 @@ async def test_backend_client_rejects_malformed_response() -> None:
     ) as http:
         with pytest.raises(InvalidBackendResponse):
             await BackendClient("http://backend:8000", 5.0, http).localize(b"image", request_id="r")
+
+
+def test_low_confidence_candidate_is_validated_and_preserved() -> None:
+    payload = {
+        "status": "low_confidence",
+        "prediction": {"lat": 55.701234, "lon": 37.665432, "confidence": 0.62},
+        "matches": [],
+    }
+    assert validate_product_response(payload) is payload
+
+
+def test_low_confidence_rejects_malformed_optional_prediction() -> None:
+    with pytest.raises(InvalidBackendResponse):
+        validate_product_response(
+            {
+                "status": "low_confidence",
+                "prediction": {"lat": "not-a-number", "lon": 37.6, "confidence": 0.5},
+                "matches": [],
+            }
+        )

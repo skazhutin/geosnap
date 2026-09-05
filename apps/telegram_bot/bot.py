@@ -52,7 +52,8 @@ TEXT: dict[Language, dict[str, str]] = {
         "malformed": "GeoSnap returned an unexpected response. Please try again later.",
         "unavailable": "GeoSnap is temporarily unavailable. Please try again later.",
         "internal": "GeoSnap could not process the photo. Please try again later.",
-        "low_confidence": "Potential matches were found, but the evidence is not strong enough for a reliable location. No pin was sent. Try another angle with distinctive buildings or signs.\n\nSend another photo when ready.",
+        "low_confidence": "⚠️ Tentative location\n{lat:.4f}, {lon:.4f}\n\nGeoSnap found a possible point, but the evidence is below the acceptance threshold. This result may be significantly wrong.{attribution}\n\nYou can send another photo.",
+        "low_confidence_no_prediction": "Potential visual matches were found, but GeoSnap could not produce a usable location. No point is shown. Try another angle with distinctive buildings or signs.\n\nYou can send another photo.",
         "out_of_coverage": "This scene is not sufficiently represented by GeoSnap’s current Moscow reference gallery. The photo itself may still be valid. No pin was sent.\n\nSend another photo when ready.",
         "ok": "Estimated location\n{lat:.4f}, {lon:.4f}\n\nStrong visual evidence passed GeoSnap’s acceptance policy. The evidence score ({score:.3f}) is a ranking signal, not a probability.{attribution}\n\nSend another photo when ready.",
         "google": "Google Maps",
@@ -70,7 +71,8 @@ TEXT: dict[Language, dict[str, str]] = {
         "malformed": "GeoSnap вернул неожиданный ответ. Повторите попытку позже.",
         "unavailable": "GeoSnap временно недоступен. Повторите попытку позже.",
         "internal": "Не удалось обработать фото. Повторите попытку позже.",
-        "low_confidence": "Потенциальные совпадения найдены, но данных недостаточно для надёжной точки. Метка не отправлена. Попробуйте другой ракурс с заметными зданиями или вывесками.\n\nМожно отправить следующее фото.",
+        "low_confidence": "⚠️ Примерное место\n{lat:.4f}, {lon:.4f}\n\nGeoSnap нашёл возможную точку, но результат не прошёл порог уверенности. Он может быть сильно ошибочным.{attribution}\n\nМожно отправить следующее фото.",
+        "low_confidence_no_prediction": "Визуальные совпадения найдены, но GeoSnap не смог определить пригодную для показа точку. Координаты не отображаются. Попробуйте другой ракурс с заметными зданиями или вывесками.\n\nМожно отправить следующее фото.",
         "out_of_coverage": "Сцена недостаточно представлена в текущей эталонной галерее Москвы. Само фото может быть корректным. Метка не отправлена.\n\nМожно отправить следующее фото.",
         "ok": "Предполагаемое место\n{lat:.4f}, {lon:.4f}\n\nСильные визуальные свидетельства прошли порог GeoSnap. Оценка ({score:.3f}) — сигнал ранжирования, а не вероятность.{attribution}\n\nМожно отправить следующее фото.",
         "google": "Google Карты",
@@ -111,6 +113,34 @@ def configure_logging(level: str) -> None:
 def _language(context: Any) -> Language | None:
     value = context.user_data.get(LANGUAGE_KEY)
     return value if value in {"ru", "en"} else None
+
+
+def _reference_attribution(
+    result: dict[str, Any],
+    language: Language,
+    *,
+    tentative: bool = False,
+) -> str:
+    sources = sorted(
+        {
+            str(match.get("source"))
+            for match in result.get("matches", [])[:6]
+            if isinstance(match, dict) and match.get("source")
+        }
+    )
+    names = [
+        "Mapillary" if source.lower() == "mapillary"
+        else "KartaView" if source.lower() == "kartaview"
+        else source
+        for source in sources
+    ]
+    if not names:
+        return ""
+    if language == "en":
+        prefix = "\nPossible reference imagery: " if tentative else "\nReference imagery: "
+    else:
+        prefix = "\nВозможные эталонные снимки: " if tentative else "\nЭталонные снимки: "
+    return prefix + ", ".join(names)
 
 
 class GeoSnapBot:
@@ -248,7 +278,28 @@ class GeoSnapBot:
         status = result["status"]
         text = TEXT[language]
         if status == "low_confidence":
-            await self._finish(progress, message, text["low_confidence"])
+            prediction = result.get("prediction")
+            if not isinstance(prediction, dict):
+                await self._finish(progress, message, text["low_confidence_no_prediction"])
+                return
+            lat = float(prediction["lat"])
+            lon = float(prediction["lon"])
+            keyboard = InlineKeyboardMarkup(
+                [[
+                    InlineKeyboardButton(text["google"], url=google_maps_url(lat, lon)),
+                    InlineKeyboardButton(text["yandex"], url=yandex_maps_url(lat, lon)),
+                ]]
+            )
+            await self._finish(
+                progress,
+                message,
+                text["low_confidence"].format(
+                    lat=lat,
+                    lon=lon,
+                    attribution=_reference_attribution(result, language, tentative=True),
+                ),
+                reply_markup=keyboard,
+            )
             return
         if status == "out_of_coverage":
             await self._finish(progress, message, text["out_of_coverage"])
@@ -257,11 +308,7 @@ class GeoSnapBot:
         lat = float(prediction["lat"])
         lon = float(prediction["lon"])
         score = float(prediction["confidence"])
-        sources = sorted(
-            {str(match.get("source")) for match in result.get("matches", [])[:6] if isinstance(match, dict) and match.get("source")}
-        )
-        names = ["Mapillary" if source.lower() == "mapillary" else "KartaView" if source.lower() == "kartaview" else source for source in sources]
-        attribution = ("\nReference imagery: " if language == "en" else "\nЭталонные снимки: ") + ", ".join(names) if names else ""
+        attribution = _reference_attribution(result, language)
         keyboard = InlineKeyboardMarkup(
             [[
                 InlineKeyboardButton(text["google"], url=google_maps_url(lat, lon)),

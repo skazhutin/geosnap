@@ -25,7 +25,8 @@ TELEGRAM_BOT_PUBLIC_URL=https://t.me/<public-bot-name>
 Every supported response is localized in Russian and English:
 
 - `ok`: processing text is replaced by “Estimated location” / “Предполагаемое место”, four-decimal coordinates, strong-evidence wording, an explicit “not a probability” caveat, Google and Yandex inline buttons, provider attribution, a native location pin, and a prompt for the next photo;
-- `low_confidence`: explains that evidence is insufficient and sends no pin, coordinates or map buttons;
+- `low_confidence` with a prediction: sends a localized “Tentative location” / “Примерное место” warning, four-decimal coordinates, Google/Yandex buttons, and lightweight possible-reference attribution. It deliberately sends no native Telegram location because that presentation looks too authoritative;
+- `low_confidence` without a prediction: explains that no usable point is available and sends no coordinates, map buttons, or native location;
 - `out_of_coverage`: explains the current gallery gap without calling the photo invalid, and sends no pin, coordinates or map buttons;
 - rate limit, timeout, backend unavailable, malformed response, invalid/oversize image, cooldown and unsupported-message paths provide concise localized recovery text.
 
@@ -41,6 +42,6 @@ The bot has a per-user cooldown, a process-wide semaphore and a 10 MiB default d
 .venv/bin/pytest -q apps/telegram_bot/tests
 ```
 
-Tests mock Telegram and backend calls and require no real token. They cover language selection, photo-before-language, `/help`, both languages for success/abstention/errors, map-link coordinate order, size limits, cooldown and concurrency.
+Tests mock Telegram and backend calls and require no real token. They cover language selection, photo-before-language, `/help`, accepted and tentative rendering in both languages, the no-prediction fallback, true out-of-coverage and errors, map-link coordinate order, the tentative/native-location distinction, size limits, cooldown and concurrency.
 
 A later webhook deployment would add a public HTTPS Telegram route and secret verification while keeping the same handlers and internal backend client. Long polling remains simpler for the current single-instance MVP.

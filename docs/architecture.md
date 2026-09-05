@@ -61,7 +61,7 @@ Production previews cover exactly the indexed reference set. Reference IDs map t
 
 The browser posts to `/api/localize`; Caddy strips `/api` and calls FastAPI `/localize`. The bot posts directly to `http://backend:8000/localize`. Both therefore use identical upload validation, rate limiting, inference capacity, retrieval, policy, and status semantics.
 
-`ok` has a prediction and matches. `low_confidence` and `out_of_coverage` contain no authoritative prediction. Failures are distinct typed 4xx/5xx statuses. Thumbnail URLs are backend-relative `/thumbnails/{opaque-id}` and browser code resolves them below its `/api` base.
+`ok` has a prediction and matches and is displayed as the accepted tier. Ordinary `low_confidence` also retains the best candidate prediction and evidence, but both clients display it as a visibly warning-labelled tentative tier; it has not passed the frozen threshold and may be significantly wrong. The website uses a distinct marker, while Telegram deliberately omits its native location pin. `low_confidence` without a prediction and `out_of_coverage` display no point. Failures are distinct typed 4xx/5xx statuses. Thumbnail URLs are backend-relative `/thumbnails/{opaque-id}` and browser code resolves them below its `/api` base.
 
 FastAPI accepts one bounded, decoded JPEG/PNG/WebP and does not use EXIF GPS. One Uvicorn worker avoids duplicating model/index memory; a semaphore and bounded queue control expensive work. Timeout cancellation does not release capacity while a worker thread is still computing.
 

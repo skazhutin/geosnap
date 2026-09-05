@@ -5,13 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 vi.mock("./components/ResultMap", () => ({
-  ResultMap: ({ prediction, coverageVisible, onCoverageToggle }: {
+  ResultMap: ({ prediction, estimateTier, coverageVisible, onCoverageToggle }: {
     prediction: { lat: number; lon: number } | null;
+    estimateTier: "accepted" | "tentative" | null;
     coverageVisible: boolean;
     onCoverageToggle: (value: boolean) => void;
   }) => (
     <div data-testid="map">
-      {prediction && <span data-testid="estimate-marker">{prediction.lat},{prediction.lon}</span>}
+      {prediction && <span data-testid="estimate-marker" data-estimate-tier={estimateTier}>{prediction.lat},{prediction.lon}</span>}
       <button type="button" aria-pressed={coverageVisible} onClick={() => onCoverageToggle(!coverageVisible)}>Coverage</button>
     </div>
   ),
@@ -113,6 +114,7 @@ describe("GeoSnap product UI", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     expect(await screen.findByRole("heading", { name: /estimated location/i })).toBeInTheDocument();
     expect(screen.getByTestId("estimate-marker")).toHaveTextContent("55.751244,37.618423");
+    expect(screen.getByTestId("estimate-marker")).toHaveAttribute("data-estimate-tier", "accepted");
     expect(screen.getByText("55.7512, 37.6184")).toBeInTheDocument();
     expect(screen.getByText(/ranking signal, not a probability/i)).toBeInTheDocument();
     expect(screen.queryByText(/uncertainty/i)).not.toBeInTheDocument();
@@ -140,17 +142,46 @@ describe("GeoSnap product UI", () => {
     expect(await screen.findByRole("heading", { name: /estimated location/i })).toBeInTheDocument();
   });
 
-  it.each([
-    ["low_confidence", "Not enough evidence"],
-    ["out_of_coverage", "Scene not represented"],
-  ])("renders %s without marker or authoritative map actions", async (status, title) => {
-    vi.mocked(fetch).mockResolvedValue(jsonResponse(apiResponse({ status, prediction: null })));
+  it("renders a low-confidence prediction as a distinctly tentative location", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(apiResponse({
+      status: "low_confidence",
+      prediction: { lat: 55.701234, lon: 37.665432, confidence: 0.62 },
+      matches: [1, 2, 3, 4].map(match),
+    })));
     await localize();
-    expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Tentative location" })).toBeInTheDocument();
+    expect(screen.getByText(/below the acceptance threshold/i)).toBeInTheDocument();
+    expect(screen.getByText(/may be significantly wrong/i)).toBeInTheDocument();
+    expect(screen.getByText("Tentative coordinates")).toBeInTheDocument();
+    expect(screen.getByText("55.7012, 37.6654")).toBeInTheDocument();
+    expect(screen.getByTestId("estimate-marker")).toHaveAttribute("data-estimate-tier", "tentative");
+    expect(screen.getByRole("link", { name: /open tentative point in google maps/i })).toHaveAttribute(
+      "href",
+      "https://www.google.com/maps/search/?api=1&query=55.701234,37.665432",
+    );
+    expect(screen.getByRole("link", { name: /open tentative point in yandex maps/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Possible visual matches" })).toBeInTheDocument();
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.queryByText(/no location pin has been placed/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps a safe abstention UI when low confidence has no prediction", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(apiResponse({ status: "low_confidence", prediction: null })));
+    await localize();
+    expect(await screen.findByRole("heading", { name: "Not enough evidence" })).toBeInTheDocument();
     expect(screen.getByText(/no location pin has been placed/i)).toBeInTheDocument();
     expect(screen.queryByTestId("estimate-marker")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /google maps/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /try another photo/i })).toBeInTheDocument();
+  });
+
+  it("keeps out of coverage strict without a prediction or map actions", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(apiResponse({ status: "out_of_coverage", prediction: null })));
+    await localize();
+    expect(await screen.findByRole("heading", { name: "Scene not represented" })).toBeInTheDocument();
+    expect(screen.getByText(/no location pin has been placed/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("estimate-marker")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /google maps/i })).not.toBeInTheDocument();
   });
 
   it.each([

@@ -6,11 +6,14 @@ const TILE = Buffer.from(
 );
 
 function productResponse(status = "ok") {
+  const hasPrediction = status === "ok" || status === "low_confidence";
   return {
     status,
-    prediction: status === "ok" ? { lat: 55.751244, lon: 37.618423, confidence: 0.947 } : null,
+    prediction: hasPrediction
+      ? { lat: 55.751244, lon: 37.618423, confidence: status === "ok" ? 0.947 : 0.62 }
+      : null,
     hypotheses: [],
-    matches: status === "ok" ? [1, 2, 3, 4].map((rank) => ({
+    matches: hasPrediction ? [1, 2, 3, 4].map((rank) => ({
       reference_id: `ref-${rank}`,
       source: rank % 2 ? "mapillary" : "kartaview",
       lat: 55.75,
@@ -82,9 +85,12 @@ test("accepted result places one marker and exposes correct actions", async ({ p
   await upload(page);
   await expect(page.getByRole("heading", { name: "Estimated location" })).toBeVisible();
   await expect(page.locator(".estimate-marker")).toHaveCount(1);
+  await expect(page.locator(".estimate-marker--accepted")).toHaveCount(1);
+  await expect(page.locator(".estimate-marker--tentative")).toHaveCount(0);
+  await expect(page.locator(".estimate-marker")).toHaveAttribute("aria-label", /accepted estimated location/i);
   await expect(page.getByText("55.7512, 37.6184", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Google Maps" })).toHaveAttribute("href", /query=55\.751244,37\.618423/);
-  await expect(page.getByRole("link", { name: "Yandex Maps" })).toHaveAttribute("href", /ll=37\.618423%2C55\.751244/);
+  await expect(page.getByRole("link", { name: /accepted point in google maps/i })).toHaveAttribute("href", /query=55\.751244,37\.618423/);
+  await expect(page.getByRole("link", { name: /accepted point in yandex maps/i })).toHaveAttribute("href", /ll=37\.618423%2C55\.751244/);
   await expect(page.getByText(/not a probability/i)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Strongest references" })).toBeVisible();
   if (testInfo.project.name === "mobile-chromium") {
@@ -136,17 +142,39 @@ test("required desktop and mobile viewports keep a usable map and panel", async 
   }
 });
 
-for (const [status, heading] of [
-  ["low_confidence", "Not enough evidence"],
-  ["out_of_coverage", "Scene not represented"],
-] as const) {
-  test(`${status} abstains without an authoritative marker`, async ({ page }) => {
-    await prepare(page, status);
-    await page.goto("/");
-    await upload(page);
-    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
-    await expect(page.locator(".estimate-marker")).toHaveCount(0);
-    await expect(page.getByRole("link", { name: "Google Maps" })).toHaveCount(0);
-    await expect(page.getByText("No location pin has been placed.")).toBeVisible();
-  });
-}
+test("low confidence exposes a visually distinct tentative result", async ({ page }, testInfo) => {
+  await prepare(page, "low_confidence");
+  await page.goto("/");
+  await upload(page);
+  await expect(page.getByRole("heading", { name: "Tentative location" })).toBeVisible();
+  await expect(page.getByText(/below the acceptance threshold/i)).toBeVisible();
+  await expect(page.getByText(/may be significantly wrong/i)).toBeVisible();
+  await expect(page.getByText("Tentative coordinates")).toBeVisible();
+  await expect(page.getByText("55.7512, 37.6184", { exact: true })).toBeVisible();
+  await expect(page.locator(".estimate-marker--tentative")).toHaveCount(1);
+  await expect(page.locator(".estimate-marker--accepted")).toHaveCount(0);
+  await expect(page.locator(".estimate-marker--tentative")).toHaveAttribute("aria-label", /tentative low-confidence estimate/i);
+  await expect(page.getByTestId("map-canvas")).toHaveAttribute("aria-label", /tentative low-confidence estimate/i);
+  await expect(page.getByRole("link", { name: /tentative point in google maps/i })).toHaveAttribute("href", /query=55\.751244,37\.618423/);
+  await expect(page.getByRole("link", { name: /tentative point in yandex maps/i })).toHaveAttribute("href", /ll=37\.618423%2C55\.751244/);
+  await expect(page.getByRole("heading", { name: "Possible visual matches" })).toBeVisible();
+  await expect(page.locator(".match-card")).toHaveCount(3);
+  if (testInfo.project.name === "mobile-chromium") {
+    await page.waitForTimeout(1_400);
+    const markerBox = await page.locator(".estimate-marker--tentative").boundingBox();
+    const panelBox = await page.locator(".side-panel").boundingBox();
+    expect(markerBox).not.toBeNull();
+    expect(panelBox).not.toBeNull();
+    expect(markerBox!.y + markerBox!.height).toBeLessThan(panelBox!.y);
+  }
+});
+
+test("out of coverage remains strict without a location", async ({ page }) => {
+  await prepare(page, "out_of_coverage");
+  await page.goto("/");
+  await upload(page);
+  await expect(page.getByRole("heading", { name: "Scene not represented" })).toBeVisible();
+  await expect(page.locator(".estimate-marker")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /google maps/i })).toHaveCount(0);
+  await expect(page.getByText("No location pin has been placed.")).toBeVisible();
+});

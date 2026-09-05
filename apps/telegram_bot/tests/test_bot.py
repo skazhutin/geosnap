@@ -56,6 +56,14 @@ def ok_result() -> dict:
     }
 
 
+def low_confidence_result() -> dict:
+    return {
+        "status": "low_confidence",
+        "prediction": {"lat": 55.701234, "lon": 37.665432, "confidence": 0.62},
+        "matches": [{"source": "mapillary"}, {"source": "kartaview"}],
+    }
+
+
 def settings(**overrides) -> BotSettings:
     values = {
         "token": "123:test",
@@ -172,14 +180,55 @@ async def test_valid_photo_uses_highest_resolution_and_localized_ok(language: st
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("language", ["ru", "en"])
-@pytest.mark.parametrize("status", ["low_confidence", "out_of_coverage"])
-async def test_abstention_statuses_are_localized_and_never_send_pin(language: str, status: str) -> None:
+@pytest.mark.parametrize(
+    ("language", "heading", "warning"),
+    [
+        ("en", "⚠️ Tentative location", "may be significantly wrong"),
+        ("ru", "⚠️ Примерное место", "может быть сильно ошибочным"),
+    ],
+)
+async def test_low_confidence_shows_tentative_point_without_native_pin(
+    language: str,
+    heading: str,
+    warning: str,
+) -> None:
     update, progress = update_with(FakePhoto())
-    await GeoSnapBot(settings(), FakeBackend({"status": status, "prediction": None, "matches": []})).photo(
+    await GeoSnapBot(settings(), FakeBackend(low_confidence_result())).photo(
         update, context(language)
     )
-    assert progress.edit_text.await_args.args[0] == TEXT[language][status]
+    rendered = progress.edit_text.await_args.args[0]
+    assert heading in rendered
+    assert warning in rendered
+    assert "55.7012, 37.6654" in rendered
+    keyboard = progress.edit_text.await_args.kwargs["reply_markup"]
+    urls = [button.url for button in keyboard.inline_keyboard[0]]
+    assert urls == [google_maps_url(55.701234, 37.665432), yandex_maps_url(55.701234, 37.665432)]
+    update.message.reply_location.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["ru", "en"])
+async def test_low_confidence_without_prediction_is_safe_abstention(language: str) -> None:
+    update, progress = update_with(FakePhoto())
+    await GeoSnapBot(
+        settings(),
+        FakeBackend({"status": "low_confidence", "prediction": None, "matches": []}),
+    ).photo(update, context(language))
+    assert progress.edit_text.await_args.args[0] == TEXT[language]["low_confidence_no_prediction"]
+    assert "reply_markup" not in progress.edit_text.await_args.kwargs
+    update.message.reply_location.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["ru", "en"])
+async def test_out_of_coverage_is_localized_and_never_sends_point(language: str) -> None:
+    update, progress = update_with(FakePhoto())
+    await GeoSnapBot(
+        settings(),
+        FakeBackend({"status": "out_of_coverage", "prediction": None, "matches": []}),
+    ).photo(update, context(language))
+    assert progress.edit_text.await_args.args[0] == TEXT[language]["out_of_coverage"]
+    assert "reply_markup" not in progress.edit_text.await_args.kwargs
     update.message.reply_location.assert_not_awaited()
 
 

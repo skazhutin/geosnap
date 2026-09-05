@@ -565,6 +565,33 @@ def test_localize_low_confidence_is_honest_product_response() -> None:
     assert parsed.message == "The image could not be localized with sufficient confidence."
 
 
+def test_localize_low_confidence_preserves_candidate_prediction_and_evidence() -> None:
+    candidate = success_result()
+    fake = FakeService(
+        ServiceResult(
+            status="low_confidence",
+            prediction=candidate.prediction,
+            hypotheses=candidate.hypotheses,
+            matches=candidate.matches,
+            diagnostics=candidate.diagnostics,
+        )
+    )
+    app = create_app(settings=make_settings(), service_factory=lambda: fake)
+    body, headers = multipart(encoded_image())
+    with ASGITestClient(app) as client:
+        response = client.post("/localize", body=body, headers=headers)
+
+    parsed = LocalizeResponse.model_validate(response.json())
+    assert response.status_code == 200
+    assert parsed.status is ApiStatus.LOW_CONFIDENCE
+    assert parsed.prediction is not None
+    assert parsed.prediction.lat == 55.751244
+    assert parsed.prediction.lon == 37.618423
+    assert parsed.hypotheses[0].lat == 55.751
+    assert parsed.matches[0].reference_id == "mapillary/id 1"
+    assert parsed.matches[0].thumbnail_url == "/thumbnails/mapillary%2Fid%201"
+
+
 def test_localize_out_of_coverage_is_an_explicit_product_response() -> None:
     fake = FakeService(ServiceResult(status="out_of_coverage"))
     app = create_app(settings=make_settings(), service_factory=lambda: fake)

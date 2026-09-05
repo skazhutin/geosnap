@@ -175,8 +175,12 @@ function PhotoSummary({ file, previewUrl, onReplace, onRemove }: {
   );
 }
 
-function SuccessResult({ result }: { result: LocalizeResponse }) {
+function LocationResult({ result, tier }: {
+  result: LocalizeResponse;
+  tier: "accepted" | "tentative";
+}) {
   const prediction = result.prediction as Prediction;
+  const tentative = tier === "tentative";
   const [copied, setCopied] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const visibleMatches = showAll ? result.matches : result.matches.slice(0, 3);
@@ -206,26 +210,49 @@ function SuccessResult({ result }: { result: LocalizeResponse }) {
   }
 
   return (
-    <section className="result-block" aria-labelledby="result-title">
+    <section className={`result-block ${tentative ? "tentative" : "accepted"}`} aria-labelledby="result-title">
       <div className="result-heading">
-        <span className="result-icon"><CheckIcon /></span>
+        <span className="result-icon">{tentative ? <AlertIcon /> : <CheckIcon />}</span>
         <div>
-          <p className="eyebrow success">Strong visual agreement</p>
-          <h2 id="result-title" tabIndex={-1}>Estimated location</h2>
+          <p className={`eyebrow ${tentative ? "tentative" : "success"}`}>
+            {tentative ? "Low confidence" : "Accepted result · Strong evidence"}
+          </p>
+          <h2 id="result-title" tabIndex={-1}>{tentative ? "Tentative location" : "Estimated location"}</h2>
         </div>
       </div>
-      <p className="evidence-copy">The accepted result passed GeoSnap’s evidence policy. This is a ranking signal, not a probability.</p>
+      <p className="evidence-copy">
+        {tentative
+          ? "GeoSnap found a possible location, but the evidence is below the acceptance threshold. This best guess may be significantly wrong."
+          : "The accepted result passed GeoSnap’s evidence policy. This is a ranking signal, not a probability."}
+      </p>
+      <p className="coordinate-label">{tentative ? "Tentative coordinates" : "Coordinates"}</p>
       <div className="coordinate-row">
         <code>{coordinates}</code>
-        <button type="button" onClick={copyCoordinates} aria-label="Copy coordinates"><CopyIcon /> {copied ? "Copied" : "Copy"}</button>
+        <button type="button" onClick={copyCoordinates} aria-label={tentative ? "Copy tentative coordinates" : "Copy coordinates"}><CopyIcon /> {copied ? "Copied" : "Copy"}</button>
       </div>
       <div className="external-actions">
-        <a href={googleMapsUrl(prediction.lat, prediction.lon)} target="_blank" rel="noreferrer">Google Maps <ExternalIcon /></a>
-        <a href={yandexMapsUrl(prediction.lat, prediction.lon)} target="_blank" rel="noreferrer">Yandex Maps <ExternalIcon /></a>
+        <a
+          href={googleMapsUrl(prediction.lat, prediction.lon)}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={tentative ? "Open tentative point in Google Maps" : "Open accepted point in Google Maps"}
+        >Google Maps <ExternalIcon /></a>
+        <a
+          href={yandexMapsUrl(prediction.lat, prediction.lon)}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={tentative ? "Open tentative point in Yandex Maps" : "Open accepted point in Yandex Maps"}
+        >Yandex Maps <ExternalIcon /></a>
       </div>
+      {tentative && (
+        <details className="tentative-details">
+          <summary>Why is this low confidence?</summary>
+          <p>Visual matches may disagree geographically, evidence can be weaker than the frozen acceptance threshold, and the current Moscow gallery is incomplete.</p>
+        </details>
+      )}
       {result.matches.length > 0 && (
         <section className="matches-block" aria-labelledby="matches-title">
-          <div className="section-heading"><h3 id="matches-title">Strongest references</h3><span>{result.matches.length} returned</span></div>
+          <div className="section-heading"><h3 id="matches-title">{tentative ? "Possible visual matches" : "Strongest references"}</h3><span>{result.matches.length} returned</span></div>
           <div className="matches-list">{visibleMatches.map((match, index) => <MatchCard key={`${match.source}-${match.reference_id}`} match={match} rank={index + 1} />)}</div>
           {result.matches.length > 3 && (
             <button className="show-more" type="button" onClick={() => setShowAll((value) => !value)} aria-expanded={showAll}>
@@ -314,8 +341,9 @@ function App() {
   }, [coverageVisible]);
 
   useEffect(() => {
-    if (ui.phase === "ok") document.getElementById("result-title")?.focus();
-    else if (ui.phase === "low_confidence" || ui.phase === "out_of_coverage") {
+    if (ui.phase === "ok" || (ui.phase === "low_confidence" && ui.result.prediction)) {
+      document.getElementById("result-title")?.focus();
+    } else if (ui.phase === "low_confidence" || ui.phase === "out_of_coverage") {
       document.getElementById("status-title")?.focus();
     } else if (ui.phase === "error") document.getElementById("error-title")?.focus();
   }, [ui.phase]);
@@ -401,10 +429,12 @@ function App() {
     openFilePicker();
   }
 
-  const prediction = ui.phase === "ok" ? ui.result.prediction : null;
+  const prediction = ui.phase === "ok" || ui.phase === "low_confidence" ? ui.result.prediction : null;
+  const estimateTier = prediction ? (ui.phase === "low_confidence" ? "tentative" : "accepted") : null;
   const liveMessage = ui.phase === "processing" ? "Photo selected. Localization in progress."
     : ui.phase === "ok" ? "Estimated location is ready and shown on the map."
-      : ui.phase === "low_confidence" || ui.phase === "out_of_coverage" ? "GeoSnap abstained and placed no location marker."
+      : ui.phase === "low_confidence" && prediction ? "A low-confidence tentative location is ready and shown on the map."
+        : ui.phase === "low_confidence" || ui.phase === "out_of_coverage" ? "GeoSnap returned no usable location and placed no marker."
         : ui.phase === "error" ? ERROR_COPY[ui.code].title : "";
 
   return (
@@ -420,7 +450,7 @@ function App() {
 
       <main className="workspace">
         <Suspense fallback={<section className="map-pane map-loading" role="status">Loading map…</section>}>
-          <ResultMap prediction={prediction} coverageVisible={coverageVisible} onCoverageToggle={setCoverageVisible} />
+          <ResultMap prediction={prediction} estimateTier={estimateTier} coverageVisible={coverageVisible} onCoverageToggle={setCoverageVisible} />
         </Suspense>
 
         <aside
@@ -436,7 +466,7 @@ function App() {
             <div className="panel-intro">
               <p className="eyebrow">Visual geolocation</p>
               <h1>Find a place from a photo</h1>
-              <p>Upload a Moscow street scene. GeoSnap returns a location only when visual evidence is strong enough.</p>
+              <p>Upload a Moscow street scene. GeoSnap labels a result as accepted or tentative, and returns no point when coverage is absent.</p>
             </div>
 
             <form className="upload-form" onSubmit={onSubmit}>
@@ -462,8 +492,10 @@ function App() {
               )}
             </form>
 
-            {ui.phase === "ok" && <SuccessResult result={ui.result} />}
-            {(ui.phase === "low_confidence" || ui.phase === "out_of_coverage") && <AbstentionResult phase={ui.phase} />}
+            {ui.phase === "ok" && <LocationResult result={ui.result} tier="accepted" />}
+            {ui.phase === "low_confidence" && ui.result.prediction && <LocationResult result={ui.result} tier="tentative" />}
+            {ui.phase === "low_confidence" && !ui.result.prediction && <AbstentionResult phase="low_confidence" />}
+            {ui.phase === "out_of_coverage" && <AbstentionResult phase="out_of_coverage" />}
             {ui.phase === "error" && <ErrorResult state={ui} onRetry={() => ui.file && void submitFile(ui.file)} />}
 
             {(ui.phase === "ok" || ui.phase === "low_confidence" || ui.phase === "out_of_coverage") && (

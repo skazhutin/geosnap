@@ -45,12 +45,12 @@ The browser uses the same FastAPI localization authority as the Telegram client.
 The three product statuses are:
 
 - `ok`: a location passed the frozen production policy; coordinates and matches are present.
-- `low_confidence`: candidate matches exist but evidence is insufficient; do not present an authoritative pin.
+- `low_confidence`: a best candidate exists in the ordinary case but did not pass the frozen confidence policy. Present it only as a visibly warning-labelled tentative estimate, never as an accepted or reliable point. Defensively handle `prediction: null` with no marker or coordinates.
 - `out_of_coverage`: the scene is not sufficiently represented by current Moscow references; do not present coordinates.
 
 Transport and service failures use structured statuses including `invalid_image`, `unsupported_format`, `image_too_large`, `rate_limited`, `service_overloaded`, `gateway_timeout`, `model_not_ready`, `index_not_ready`, and `internal_error`, with an appropriate 4xx/5xx response. Preserve the `X-Request-ID` response header for support diagnostics. Do not display server implementation details.
 
-`prediction.confidence` is a policy/evidence ranking score, not a calibrated probability. It must not be formatted as “probability correct.” The published benchmark is an aggregate result with 8.47% answer rate and 96.85% conditional <=100 m accuracy among accepted answers; it is not a per-photo guarantee.
+`prediction.confidence` is a policy/evidence ranking score, not a calibrated probability. It must not be formatted as “probability correct.” The published benchmark is an aggregate result with 8.47% answer rate and 96.85% conditional <=100 m accuracy among accepted answers; it is not a per-photo guarantee. Tentative results are excluded from those accepted-answer metrics. Raw frozen-v4 localization reached <=100 m for 29.42% of all eligible queries, so the below-threshold candidate must be described as exploratory and potentially very inaccurate.
 
 ## Map and references
 
@@ -62,7 +62,7 @@ Keep the tile provider's required attribution, OpenStreetMap data attribution wh
 
 ## Required product language and privacy
 
-The UI must say that GeoSnap attempts to localize supported Moscow street scenes and may abstain when evidence is insufficient. Do not claim complete Moscow coverage or “96.85% accuracy in Moscow.” Communicate that estimates may be wrong.
+The UI must say that GeoSnap attempts to localize supported Moscow street scenes, distinguishes accepted estimates from tentative best guesses, and may return no point when coverage is absent. Do not claim complete Moscow coverage or “96.85% accuracy in Moscow.” Communicate that accepted estimates may be wrong and tentative estimates may be significantly wrong.
 
 Uploads are processed in memory and are not permanently retained by default. GPS metadata is not required or used as localization evidence. Avoid adding analytics or persistence that captures images, full EXIF, exact predictions, or provider/user identifiers without a separate privacy decision.
 

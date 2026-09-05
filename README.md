@@ -1,6 +1,6 @@
 # GeoSnap
 
-GeoSnap is an experimental visual-geolocation product for supported Moscow street scenes. A user sends a street photo from the map-first website or bilingual Telegram bot; one shared FastAPI service retrieves frozen street-view references and either returns an approximate location or abstains when the evidence is insufficient.
+GeoSnap is an experimental visual-geolocation product for supported Moscow street scenes. A user sends a street photo from the map-first website or bilingual Telegram bot; one shared FastAPI service retrieves frozen street-view references and returns either an accepted estimate, an explicitly tentative best guess, or no point when coverage is absent.
 
 GeoSnap does not claim complete Moscow coverage. In the frozen final test it answered 127/1,499 queries (8.47%, bootstrap 95% CI 7.07–9.94%). Among those accepted answers, 96.85% were within 100 m (Wilson 95% CI 92.18–98.77%). That conditional result must always be presented together with answer rate and abstention—not as “96.85% accuracy in Moscow.”
 
@@ -19,8 +19,8 @@ FastAPI is the only localization authority. The bot has no Torch, SAGE, or FAISS
 
 ## Product flow
 
-- **Website:** open the map-first site, choose or drop a photo in the right panel (bottom sheet on mobile), submit it, then inspect the accepted map marker and strongest references or open the tested Google/Yandex map links. Weak evidence and coverage gaps return an explicit abstention without a marker.
-- **Telegram:** open the bot, choose Russian or English, send a photo, then receive a localized accepted result with map buttons/native location or a localized abstention. Send another photo immediately after the result.
+- **Website:** an `ok` response shows an accepted estimate. A `low_confidence` response that contains a candidate shows a visibly distinct tentative marker, coordinates, map links, and possible visual matches with an explicit warning. Coverage gaps and defensive no-prediction responses show no point.
+- **Telegram:** accepted results retain a native location pin. Tentative results provide warning-labelled coordinates and Google/Yandex buttons but deliberately omit Telegram's authoritative-looking native pin. True no-location outcomes remain point-free.
 
 Both experiences cover only supported Moscow street scenes and remain experimental.
 
@@ -69,7 +69,7 @@ The development Vite server proxies `/api` to `http://localhost:8000`. Developme
 - `GET /thumbnails/{reference_id}`: preview for a known opaque indexed reference ID.
 - `GET /metrics`: internal Prometheus endpoint, denied by the public proxy.
 
-Coordinates are never returned for abstentions. The confidence value is an evidence/policy score, not a calibrated per-photo probability. Uploads are processed in memory, GPS EXIF is not used for localization, and photos are not permanently retained by default.
+For `low_confidence`, the API may retain the best candidate coordinates even though that candidate did not pass the frozen acceptance policy. `out_of_coverage`, and the defensive `low_confidence` case without a prediction, expose no point. The confidence value is an evidence/policy score, not a calibrated per-photo probability. Uploads are processed in memory, GPS EXIF is not used for localization, and photos are not permanently retained by default.
 
 ## Documentation
 
@@ -84,4 +84,4 @@ Coordinates are never returned for abstentions. The confidence value is an evide
 - [Final QA evidence](docs/final_qa.md)
 - [Frozen localization core](docs/final_localization_core.md)
 
-The product UI is map-first on desktop and uses a deliberate bottom-sheet layout on mobile. Both clients preserve the backend’s explicit acceptance and abstention semantics.
+The product UI is map-first on desktop and uses a deliberate bottom-sheet layout on mobile. Both clients preserve the backend's frozen `ok` versus `low_confidence` decision while presenting them as clearly different accepted and tentative tiers.

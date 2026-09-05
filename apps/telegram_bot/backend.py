@@ -89,9 +89,9 @@ def validate_product_response(payload: Any) -> dict[str, Any]:
         raise InvalidBackendResponse("unknown backend status")
     status = str(payload["status"])
     prediction = payload.get("prediction")
-    if status == "ok":
+    if prediction is not None:
         if not isinstance(prediction, dict):
-            raise InvalidBackendResponse("ok response has no prediction")
+            raise InvalidBackendResponse("response has an invalid prediction")
         lat = prediction.get("lat")
         lon = prediction.get("lon")
         confidence = prediction.get("confidence")
@@ -103,7 +103,9 @@ def validate_product_response(payload: Any) -> dict[str, Any]:
             and -180 <= lon <= 180
             and 0 <= confidence <= 1
         ):
-            raise InvalidBackendResponse("ok response has an invalid prediction")
+            raise InvalidBackendResponse("response has an invalid prediction")
+    elif status == "ok":
+        raise InvalidBackendResponse("ok response has no prediction")
     matches = payload.get("matches", [])
     if not isinstance(matches, list):
         raise InvalidBackendResponse("matches must be a list")
