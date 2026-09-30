@@ -51,9 +51,9 @@ async function prepare(page: Page, status = "ok") {
 
 async function upload(page: Page) {
   await page.getByLabel("Choose a street photo").setInputFiles({
-    name: "street.jpg",
-    mimeType: "image/jpeg",
-    buffer: Buffer.from("fake-jpeg"),
+    name: "street.png",
+    mimeType: "image/png",
+    buffer: TILE,
   });
   await expect(page.getByRole("button", { name: "Replace" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove selected photo" })).toBeVisible();
