@@ -1,0 +1,35 @@
+# Optional local deployment of the cleaned 111,032-reference research candidate.
+# Use with docker-compose.prod.yml; the frozen configuration and assets remain
+# available for immediate rollback. MSLS rights require separate review before
+# public or commercial deployment.
+services:
+  backend:
+    environment:
+      GEOSNAP_LOCALIZATION_FACTORY: ml.localization.clean_sage_l:create_clean_sage_l_service
+      GEOSNAP_CLEAN_RUNTIME_CONFIG: /app/configs/moscow_clean_v5_sage_l_111032.json
+      GEOSNAP_CLEAN_INDEX_DIR: /app/candidate/index
+      GEOSNAP_SAGE_CHECKPOINT: /app/candidate/sage_vitl.pth
+      GEOSNAP_SAGE_CONTEXT_CHECKPOINT: /app/candidate/context.pth
+      LOCALIZATION_TIMEOUT_SECONDS: ${CLEAN_LOCALIZATION_TIMEOUT_SECONDS:-90}
+      BATCH_TIMEOUT_SECONDS: ${CLEAN_BATCH_TIMEOUT_SECONDS:-600}
+      LOCALIZATION_CONCURRENCY: "1"
+    volumes:
+      - type: bind
+        source: ${GEOSNAP_CLEAN_INDEX_HOST_DIR:?set GEOSNAP_CLEAN_INDEX_HOST_DIR}
+        target: /app/candidate/index
+        read_only: true
+      - type: bind
+        source: ${GEOSNAP_SAGE_L_CHECKPOINT_HOST_FILE:?set GEOSNAP_SAGE_L_CHECKPOINT_HOST_FILE}
+        target: /app/candidate/sage_vitl.pth
+        read_only: true
+      - type: bind
+        source: ${GEOSNAP_SAGE_CONTEXT_HOST_FILE:?set GEOSNAP_SAGE_CONTEXT_HOST_FILE}
+        target: /app/candidate/context.pth
+        read_only: true
+  proxy:
+    environment:
+      PROXY_BACKEND_TIMEOUT: ${CLEAN_PROXY_BACKEND_TIMEOUT:-650s}
+  telegram-bot:
+    environment:
+      TELEGRAM_BACKEND_TIMEOUT_SECONDS: ${CLEAN_TELEGRAM_BACKEND_TIMEOUT_SECONDS:-120}
+      TELEGRAM_BATCH_TIMEOUT_SECONDS: ${CLEAN_TELEGRAM_BATCH_TIMEOUT_SECONDS:-620}

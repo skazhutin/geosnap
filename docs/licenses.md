@@ -1,6 +1,6 @@
 # License and attribution audit
 
-Verified: 2026-09-02. This is an engineering inventory, not legal advice. The
+Original terms audit: 2026-09-02; local-candidate scope updated 2026-09-30 without re-verifying external terms. This is an engineering inventory, not legal advice. The
 terms linked below remain authoritative and must be rechecked before a public
 deployment or redistribution of images/model weights.
 
@@ -26,16 +26,17 @@ coverage or a blanket redistribution right.
 | Mapillary imagery | [Mapillary's current help article](https://help.mapillary.com/hc/en-us/articles/115001770409-CC-BY-SA-license-for-open-data) says public user images are shared under CC BY-SA and gives the expected per-image attribution form. API and commercial use are also subject to the current [Mapillary Terms](https://www.mapillary.com/terms). | Preserve image ID, contributor username, original image/profile links, license, and attribution in every manifest stage. When GeoSnap serves a reference image, show the visible official Mapillary mark linked to that image, the author/profile link, and CC BY-SA 4.0 beside it. Keep the registered application token outside the repository. Do not bypass API limits or create an uncontrolled bulk downloader. |
 | KartaView imagery | [KartaView Terms of Use](https://kartaview.org/terms), last modified 2025-06-17, state that street imagery is CC BY-SA 4.0. | Credit exactly `© Grab and KartaView Contributors`, preserve source/image links and license, and comply with CC BY-SA 4.0 when redistributing or adapting imagery. |
 | Wikimedia Commons evaluation images | License and attribution are file-specific; the acquisition snapshot retains each file page, author, license label/URL and hashes. See the [Commons reuse guidance](https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia). | Evaluation-only. Recheck every linked file page before reuse; do not treat the proxy as a deployable street-view gallery or as city-wide evidence. |
-| MSLS and other benchmark/training datasets | These are independently packaged datasets with their own terms, splits and possible redistribution restrictions. | Research/evaluation-only unless separately audited for a specific use. Never merge their images, descriptors or metadata into the Mapillary/KartaView production gallery or FAISS index. |
+| MSLS and other benchmark/training datasets | These are independently packaged datasets with their own terms, splits and possible redistribution restrictions. | Research/evaluation-only unless separately audited for a specific use. Keep them out of the frozen Mapillary/KartaView release index. The separate local 111,032-image research candidate includes MSLS and must not be distributed as an unrestricted public or commercial artifact. |
 | OpenStreetMap data | [OpenStreetMap copyright and license](https://www.openstreetmap.org/copyright): ODbL 1.0. | Show `© OpenStreetMap contributors` and link to the copyright page. Derived databases may trigger ODbL share-alike obligations. |
 | OpenStreetMap standard tiles | Governed separately by the [tile usage policy](https://operations.osmfoundation.org/policies/tiles/). | Suitable only for a light local demo with visible attribution. A public/high-volume deployment needs a compliant tile provider or self-hosted tiles. |
 
 Mapillary's Object Dataset and other benchmark datasets are **not** covered by
 the street-imagery row above. Each separately packaged dataset must be audited
 before use. No benchmark dataset is automatically a deployable Moscow gallery.
-The production publication gate accepts only `source=mapillary` and
-`source=kartaview`; Commons/MSLS material is excluded before embedding and
-indexing.
+The frozen-release publication gate accepts only `source=mapillary` and
+`source=kartaview`; Commons/MSLS material is excluded from that release. A
+separate local research index includes MSLS by explicit operator choice;
+its existence does not change the public publication gate.
 
 Mapillary rows without `creator.username` are quarantined instead of receiving
 a synthetic generic attribution. The UI uses the green mark from Mapillary's

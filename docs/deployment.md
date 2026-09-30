@@ -17,7 +17,7 @@ Only Caddy should be publicly reachable. FastAPI is on the internal Compose netw
 ```bash
 git clone https://github.com/skazhutin/geosnap.git
 cd geosnap
-git checkout finalize-geosnap
+# For deployment, check out the reviewed release tag or commit you intend to run.
 cp .env.example .env
 ```
 
@@ -101,3 +101,11 @@ For an infrastructure/application upgrade:
 4. If validation fails, redeploy the recorded image/commit and run the verifier again.
 
 Rollback never regenerates ML artifacts. Pin deployed image digests in the hosting platform for repeatable rollback. Changing the frozen config or manifest is a separately reviewed release, not an environment override.
+
+## Multi-photo upgrade
+
+The bot supports 1–10 photos per place through `/localize/multi`. Keep the old single-image timeout at 30 seconds and set `BATCH_TIMEOUT_SECONDS=180`, `TELEGRAM_BATCH_TIMEOUT_SECONDS=210`, `MAX_BATCH_UPLOAD_BYTES=41943040`, and `TELEGRAM_MAX_BATCH_BYTES=41943040`. For external API batch requests, set `PROXY_MAX_REQUEST_BYTES=42500000` and `PROXY_BACKEND_TIMEOUT=185s`. Existing `.env` files override the new Compose defaults and need these values when upgrading. Individual-image size limits still apply.
+
+The [cleaned SAGE-L local candidate](cleaned_sage_l_local_rollout_20260930.md) uses an opt-in Compose overlay with longer CPU inference deadlines. Its 111,032-image index is not part of the frozen artifact manifest or the default clean-machine install.
+
+Photo sets and language preferences live in one bot process; restart loses pending sets. Use one polling replica per token. Collections expire after 10 minutes of inactivity and are purged on the next update. No multi-photo accuracy or confidence calibration claim is made; see [protocol](multi_photo.md).

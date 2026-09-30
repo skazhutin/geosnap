@@ -35,7 +35,7 @@ function retryAfterSeconds(value: string | null): number | null {
 export async function localizeImage(
   file: File,
   signal?: AbortSignal,
-  timeoutMs = 35_000,
+  timeoutMs = 120_000,
 ): Promise<LocalizeOutcome> {
   const body = new FormData();
   body.append("image", file, file.name);

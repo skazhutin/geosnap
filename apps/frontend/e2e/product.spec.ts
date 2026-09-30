@@ -110,10 +110,10 @@ test("coverage query flag loads the frozen aggregate legend", async ({ page }) =
   await prepare(page);
   await page.goto("/?coverage=1");
   await expect(page.getByRole("button", { name: "Coverage" })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByText("20,487 references · coverage ≠ accuracy")).toBeVisible();
+  await expect(page.getByText("20,487 references · may differ from active index · coverage ≠ accuracy")).toBeVisible();
   await page.getByRole("button", { name: "Coverage" }).click();
   await expect(page.getByRole("button", { name: "Coverage" })).toHaveAttribute("aria-pressed", "false");
-  await expect(page.getByText("20,487 references · coverage ≠ accuracy")).toHaveCount(0);
+  await expect(page.getByText("20,487 references · may differ from active index · coverage ≠ accuracy")).toHaveCount(0);
 });
 
 test("required desktop and mobile viewports keep a usable map and panel", async ({ page }) => {
@@ -151,7 +151,7 @@ test("low confidence exposes a visually distinct tentative result", async ({ pag
   await page.goto("/");
   await upload(page);
   await expect(page.getByRole("heading", { name: "Tentative location" })).toBeVisible();
-  await expect(page.getByText(/below the acceptance threshold/i)).toBeVisible();
+  await expect(page.getByText(/its reliability has not been established/i)).toBeVisible();
   await expect(page.getByText(/may be significantly wrong/i)).toBeVisible();
   await expect(page.getByText("Tentative coordinates")).toBeVisible();
   await expect(page.getByText("55.7512, 37.6184", { exact: true })).toBeVisible();
@@ -182,3 +182,28 @@ test("out of coverage remains strict without a location", async ({ page }) => {
   await expect(page.getByRole("link", { name: /google maps/i })).toHaveCount(0);
   await expect(page.getByText("No location pin has been placed.")).toBeVisible();
 });
+
+for (const reducedMotion of ["reduce", "no-preference"] as const) {
+  test(`result stays above the mobile sheet after resizing (${reducedMotion})`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await prepare(page);
+    await page.goto("/");
+    await upload(page);
+    await expect(page.locator(".estimate-marker")).toHaveCount(1);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect.poll(async () => {
+      const marker = await page.locator(".estimate-marker").boundingBox();
+      const sheet = await page.locator(".side-panel").boundingBox();
+      return Boolean(marker && sheet && marker.y > 55 && marker.y + marker.height < sheet.y);
+    }).toBe(true);
+    // Also exercise a new prediction while already in a narrow viewport.
+    await page.getByRole("button", { name: "Try another photo" }).click();
+    await upload(page);
+    await expect.poll(async () => {
+      const marker = await page.locator(".estimate-marker").boundingBox();
+      const sheet = await page.locator(".side-panel").boundingBox();
+      return Boolean(marker && sheet && marker.y > 55 && marker.y + marker.height < sheet.y);
+    }).toBe(true);
+  });
+}

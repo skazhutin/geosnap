@@ -443,6 +443,13 @@ eval: eval-data
 		--cache-dir "$(GEOSNAP_MODEL_CACHE)" --top-k "$(EVAL_TOP_K)" \
 		--estimator "$(EVAL_ESTIMATOR)" --report-stem "$(EVAL_STEM)" --robustness
 
+.PHONY: api-frozen bot
+api-frozen:
+	$(MAKE) api GEOSNAP_RUNTIME_CONFIG=configs/moscow_production_frozen.json
+
+bot:
+	TELEGRAM_BACKEND_URL=http://127.0.0.1:8000 $(PYTHON) -m apps.telegram_bot
+
 api:
 	$(if $(strip $(GEOSNAP_RUNTIME_CONFIG)),GEOSNAP_RUNTIME_CONFIG="$(GEOSNAP_RUNTIME_CONFIG)",GEOSNAP_INDEX_DIR="$(INDEX_DIR)" RETRIEVER="$(RETRIEVER)" CITY_ID="$(CITY_ID)" INDEX_ID="$(PROFILE)") \
 		$(PYTHON) -m uvicorn app.main:app --app-dir apps/backend --host 0.0.0.0 --port 8000

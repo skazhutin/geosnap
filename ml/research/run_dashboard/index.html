@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>GeoSnap — ход исследований</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="mast-inner">
+      <div class="identity"><span class="mark" aria-hidden="true"><span></span></span><div><strong>GeoSnap</strong><small>Лаборатория снимков</small></div></div>
+      <div class="top-controls"><div class="connection" id="connection" role="status"><span class="connection-dot" aria-hidden="true"></span><span id="connection-text">Подключаемся…</span></div><label class="refresh-setting" for="refresh-interval">Обновлять каждые <select id="refresh-interval"><option value="500">0,5 с</option><option value="1000">1 с</option><option value="2000">2 с</option><option value="5000">5 с</option><option value="10000">10 с</option><option value="30000">30 с</option><option value="60000">60 с</option></select></label><button id="poll-toggle" class="poll-toggle" type="button" aria-pressed="false">Пауза обновления</button></div>
+    </div>
+  </header>
+
+  <div class="page">
+    <nav class="run-navigation" aria-label="Исследовательские прогоны">
+      <div class="run-navigation-title">Прогоны <span id="run-count">—</span></div>
+      <div id="run-list" class="run-list"></div>
+    </nav>
+
+    <main id="main">
+      <div id="error" class="error" role="alert" hidden></div>
+      <section id="empty" class="empty" hidden><h1>Пока нет прогона</h1><p>Когда исследовательская задача начнёт публиковать прогресс, она появится здесь.</p></section>
+
+      <div id="content" hidden>
+        <section class="hero" aria-labelledby="run-title">
+          <div class="hero-main">
+            <div class="phase-line"><span id="run-state" class="state-pill">—</span><span id="run-phase">—</span></div>
+            <h1 id="run-title">—</h1>
+            <p id="run-description" class="run-description">—</p>
+            <div class="progress-reading"><strong id="percentage">—</strong><span id="fraction">—</span></div>
+            <div id="progress-track" class="progress-track" role="progressbar" aria-label="Прогресс текущего этапа" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-fill"></span></div>
+            <p id="progress-context" class="progress-context">—</p>
+          </div>
+          <aside class="hero-instruments" aria-label="Показатели прогона">
+            <div class="instrument primary-instrument"><span>Осталось по текущей скорости</span><strong id="eta">—</strong><small id="finish-time">—</small></div>
+            <div class="instrument-row"><div class="instrument"><span>Скорость</span><strong id="rate">—</strong><small id="rate-unit">—</small></div><div class="instrument"><span>Последняя запись</span><strong id="last-update">—</strong><small>московское время</small></div></div>
+            <svg id="rate-chart" class="rate-chart" viewBox="0 0 280 65" role="img" aria-label="Скорость последних партий"><polyline id="rate-line" points=""></polyline></svg>
+          </aside>
+        </section>
+
+        <section class="visual-section" aria-labelledby="photos-title">
+          <div class="section-heading"><div><h2 id="photos-title">Последние снимки</h2><p id="photos-caption">Последняя завершённая партия</p></div><button id="return-live" class="text-button" type="button" hidden>Вернуться к последней партии</button></div>
+          <div id="photo-strip" class="photo-strip"></div>
+          <p id="photo-empty" class="inline-empty" hidden>Снимки появятся после первой завершённой партии.</p>
+        </section>
+
+        <div class="lower-grid">
+          <section class="work-panel" aria-labelledby="batches-title">
+            <div class="section-heading"><div><h2 id="batches-title">Партии галереи</h2><p>Каждый квадрат — 500 проверенных фотографий. Нажмите, чтобы посмотреть партию.</p></div><span id="batch-count" class="quiet-number">—</span></div>
+            <div id="batch-grid" class="batch-grid" aria-label="Партии галереи"></div>
+            <div class="grid-legend"><span><i class="legend-swatch done"></i> Готово</span><span><i class="legend-swatch working"></i> В работе</span><span><i class="legend-swatch pending"></i> Ожидает</span></div>
+          </section>
+          <section class="work-panel stages-panel" aria-labelledby="stages-title">
+            <div class="section-heading"><div><h2 id="stages-title">Этапы</h2><p>Что уже проверено и что будет дальше</p></div></div>
+            <ol id="stages" class="stages"></ol>
+            <div class="integrity"><span class="integrity-icon" aria-hidden="true">◇</span><p id="run-note">Оригинальные файлы и замороженные результаты не изменяются.</p></div>
+          </section>
+        </div>
+
+        <section id="other-processes-panel" class="other-processes" hidden aria-labelledby="other-processes-title"><h2 id="other-processes-title">Другие исследовательские процессы</h2><p>Процесс запущен, но пока не передаёт числовой прогресс.</p><ul id="other-processes"></ul></section>
+      </div>
+    </main>
+  </div>
+
+  <footer class="site-footer"><span id="refresh-description">Данные с локального компьютера. Обновление каждые 0,5 секунды.</span><span id="server-time">—</span></footer>
+  <dialog id="photo-dialog" aria-labelledby="dialog-title"><form method="dialog"><button class="dialog-close" aria-label="Закрыть изображение">×</button></form><div class="dialog-layout"><div class="dialog-photo"><img id="dialog-image" alt=""><p id="dialog-caption"></p></div><div class="dialog-info"><h2 id="dialog-title">Ответ по снимку</h2><p id="dialog-state" role="status">Загружаем измерения…</p><div id="dialog-results"></div></div></div></dialog>
+</body>
+</html>

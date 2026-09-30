@@ -24,7 +24,7 @@ from app.services.errors import (
     PublicAPIError,
     ServiceOverloadedError,
 )
-from app.services.image_validation import prepare_image, read_image_part
+from app.services.image_validation import PreparedImage, prepare_image, read_image_part
 from app.services.localization import (
     LocalizationService,
     coerce_readiness,
@@ -74,6 +74,67 @@ def error_response(
         request_id=request.state.request_id,
     )
     return JSONResponse(status_code=http_status, content=payload.model_dump(mode="json"))
+
+
+def public_result(raw_result: Any, prepared: PreparedImage, request_id: str, total_ms: float) -> LocalizeResponse:
+    result = coerce_result(raw_result)
+    try:
+        status = ApiStatus(result.status)
+    except ValueError as exc:
+        raise RuntimeError("localization service returned an unknown status") from exc
+    if status not in _PRODUCT_RESULT_STATUSES:
+        raise RuntimeError("localization service returned a non-product status")
+
+    diagnostics = Diagnostics(
+        width=prepared.diagnostics.width,
+        height=prepared.diagnostics.height,
+        sharpness=prepared.diagnostics.sharpness,
+        brightness=prepared.diagnostics.brightness,
+        exposure=prepared.diagnostics.exposure,
+        preprocess_ms=prepared.diagnostics.preprocess_ms,
+        retriever=(
+            result.diagnostics.retriever
+            if result.diagnostics.retriever and _SAFE_LABEL.fullmatch(result.diagnostics.retriever)
+            else None
+        ),
+        embedding_ms=result.diagnostics.embedding_ms,
+        retrieval_ms=result.diagnostics.retrieval_ms,
+        verification_ms=result.diagnostics.verification_ms,
+        query_ms=result.diagnostics.query_ms,
+        policy_ms=result.diagnostics.policy_ms,
+        total_ms=total_ms,
+        warnings=[warning for warning in result.diagnostics.warnings if _SAFE_WARNING.fullmatch(warning)],
+    )
+    return LocalizeResponse.model_validate(
+        {
+            "status": status,
+            "prediction": result.prediction,
+            "hypotheses": list(result.hypotheses),
+            "matches": [
+                {
+                    "reference_id": match.reference_id,
+                    "source": match.source,
+                    "lat": match.lat,
+                    "lon": match.lon,
+                    "retrieval_score": match.retrieval_score,
+                    "verification_score": match.verification_score,
+                    "thumbnail_url": safe_thumbnail_url(match),
+                    "attribution": match.attribution,
+                    "license": match.license,
+                    "source_url": match.source_url,
+                    "license_url": match.license_url,
+                    "contributor_url": match.contributor_url,
+                }
+                for match in result.matches
+            ],
+            "diagnostics": diagnostics,
+            # Do not expose arbitrary adapter exception/details. Product
+            # statuses have fixed user-facing copy at this trust boundary.
+            "message": _PUBLIC_MESSAGES.get(status),
+            "request_id": request_id,
+        },
+        from_attributes=True,
+    )
 
 
 @router.post(
@@ -130,63 +191,7 @@ async def localize(
                 raise LocalizationTimeoutError() from exc
         stage = "response_contract"
         result = coerce_result(raw_result)
-        try:
-            status = ApiStatus(result.status)
-        except ValueError as exc:
-            raise RuntimeError("localization service returned an unknown status") from exc
-        if status not in _PRODUCT_RESULT_STATUSES:
-            raise RuntimeError("localization service returned a non-product status")
-
-        diagnostics = Diagnostics(
-            width=prepared.diagnostics.width,
-            height=prepared.diagnostics.height,
-            sharpness=prepared.diagnostics.sharpness,
-            brightness=prepared.diagnostics.brightness,
-            exposure=prepared.diagnostics.exposure,
-            preprocess_ms=prepared.diagnostics.preprocess_ms,
-            retriever=(
-                result.diagnostics.retriever
-                if result.diagnostics.retriever and _SAFE_LABEL.fullmatch(result.diagnostics.retriever)
-                else None
-            ),
-            embedding_ms=result.diagnostics.embedding_ms,
-            retrieval_ms=result.diagnostics.retrieval_ms,
-            verification_ms=result.diagnostics.verification_ms,
-            query_ms=result.diagnostics.query_ms,
-            policy_ms=result.diagnostics.policy_ms,
-            total_ms=(perf_counter() - started) * 1000.0,
-            warnings=[warning for warning in result.diagnostics.warnings if _SAFE_WARNING.fullmatch(warning)],
-        )
-        payload = LocalizeResponse.model_validate(
-            {
-                "status": status,
-                "prediction": result.prediction,
-                "hypotheses": list(result.hypotheses),
-                "matches": [
-                    {
-                        "reference_id": match.reference_id,
-                        "source": match.source,
-                        "lat": match.lat,
-                        "lon": match.lon,
-                        "retrieval_score": match.retrieval_score,
-                        "verification_score": match.verification_score,
-                        "thumbnail_url": safe_thumbnail_url(match),
-                        "attribution": match.attribution,
-                        "license": match.license,
-                        "source_url": match.source_url,
-                        "license_url": match.license_url,
-                        "contributor_url": match.contributor_url,
-                    }
-                    for match in result.matches
-                ],
-                "diagnostics": diagnostics,
-                # Do not expose arbitrary adapter exception/details. Product
-                # statuses have fixed user-facing copy at this trust boundary.
-                "message": _PUBLIC_MESSAGES.get(status),
-                "request_id": request.state.request_id,
-            },
-            from_attributes=True,
-        )
+        payload = public_result(raw_result, prepared, request.state.request_id, (perf_counter() - started) * 1000.0)
         logger.info(
             json.dumps(
                 {

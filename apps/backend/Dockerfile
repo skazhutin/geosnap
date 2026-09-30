@@ -33,6 +33,7 @@ COPY configs/moscow_production_frozen.sha256 ./configs/moscow_production_frozen.
 COPY configs/moscow_production_smoke_set.json ./configs/moscow_production_smoke_set.json
 COPY configs/moscow_real_v3_confidence_model.json ./configs/moscow_real_v3_confidence_model.json
 COPY configs/production_artifacts.json ./configs/production_artifacts.json
+COPY configs/moscow_clean_v5_sage_l_111032.json ./configs/moscow_clean_v5_sage_l_111032.json
 
 USER geosnap
 EXPOSE 8000

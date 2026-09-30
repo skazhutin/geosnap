@@ -7,7 +7,7 @@ from typing import Any
 from .base import BaseRetriever
 from .dinov2_salad import DinoV2SaladRetriever
 from .megaloc import MegaLocRetriever
-from .sage import SageVitBRetriever
+from .sage import SageVitBRetriever, SageVitLRetriever
 from .selavprplusplus import SelaVPRPlusPlusBaseRetriever, SelaVPRPlusPlusRerankRetriever
 
 
@@ -21,6 +21,8 @@ def create_retriever(name: str, **kwargs: Any) -> BaseRetriever:
         return DinoV2SaladRetriever(**kwargs)
     if normalized in {"sage-vitb", "sage", "sage-vit-b"}:
         return SageVitBRetriever(**kwargs)
+    if normalized in {"sage-vitl", "sage-vit-l"}:
+        return SageVitLRetriever(**kwargs)
     if normalized in {"selavprplusplus-base", "selavpr++-base", "selavprpp-base"}:
         return SelaVPRPlusPlusBaseRetriever(**kwargs)
     if normalized in {
@@ -31,5 +33,5 @@ def create_retriever(name: str, **kwargs: Any) -> BaseRetriever:
         return SelaVPRPlusPlusRerankRetriever(**kwargs)
     raise ValueError(
         f"unknown production retriever {name!r}; expected 'megaloc', 'dinov2-salad', "
-        "'sage-vitb', 'selavprplusplus-base', or 'selavprplusplus-base-rerank'"
+        "'sage-vitb', 'sage-vitl', 'selavprplusplus-base', or 'selavprplusplus-base-rerank'"
     )

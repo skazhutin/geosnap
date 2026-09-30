@@ -17,7 +17,15 @@ class CapacityLease:
         if self._released or self._deferred:
             raise RuntimeError("capacity lease cannot be deferred")
         self._deferred = True
-        task.add_done_callback(lambda _: self.release())
+
+        def finished(completed: asyncio.Task[object]) -> None:
+            # The HTTP request may already have timed out. Retrieve late errors
+            # and keep capacity reserved until the actual inference finishes.
+            if not completed.cancelled():
+                completed.exception()
+            self.release()
+
+        task.add_done_callback(finished)
 
     def release(self) -> None:
         if not self._released:

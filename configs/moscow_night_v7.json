@@ -1,0 +1,18 @@
+{
+  "run_id": "night_v7_20260909",
+  "cutoff": "2026-09-10T06:00:00+03:00",
+  "gallery": "G2_smart",
+  "query_count": 1184,
+  "retrieval_depth": 1000,
+  "context_depth": 30,
+  "context_mixing": 0.5,
+  "diverse_context_radius_m": 25,
+  "fol_depth": 20,
+  "fol_size": 322,
+  "seed": 20260909,
+  "final_access": false,
+  "production_changes": false,
+  "calibration_use": "only numeric thresholds after architecture selection; not required for this raw-first night",
+  "selection": "all-query raw100, raw50, raw25, catastrophic rate; grouped paired uncertainty and fold consistency",
+  "no_new_phases_after_cutoff": true
+}

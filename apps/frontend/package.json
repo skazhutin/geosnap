@@ -27,5 +27,11 @@
     "typescript": "^5.6.2",
     "vite": "^6.4.3",
     "vitest": "^3.2.6"
+  },
+  "registries": {
+    "@react-bits": "https://reactbits.dev/r/{name}.json",
+    "@magicui": "https://magicui.design/r/{name}",
+    "@aceternity": "https://ui.aceternity.com/registry/{name}.json",
+    "@motion-primitives": "https://motion-primitives.com/c/{name}.json"
   }
 }

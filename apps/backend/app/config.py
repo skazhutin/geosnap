@@ -56,6 +56,8 @@ class Settings:
         )
     )
     max_upload_bytes: int = field(default_factory=lambda: _env_int("MAX_UPLOAD_BYTES", 15 * 1024 * 1024))
+    max_batch_upload_bytes: int = field(default_factory=lambda: _env_int("MAX_BATCH_UPLOAD_BYTES", 40 * 1024 * 1024))
+    batch_timeout_seconds: float = field(default_factory=lambda: _env_float("BATCH_TIMEOUT_SECONDS", 180.0))
     max_image_pixels: int = field(default_factory=lambda: _env_int("MAX_IMAGE_PIXELS", 40_000_000))
     max_image_dimension: int = field(default_factory=lambda: _env_int("MAX_IMAGE_DIMENSION", 12_000))
     multipart_overhead_bytes: int = field(default_factory=lambda: _env_int("MULTIPART_OVERHEAD_BYTES", 256 * 1024))
@@ -89,6 +91,8 @@ class Settings:
     def __post_init__(self) -> None:
         positive_fields = (
             "max_upload_bytes",
+            "max_batch_upload_bytes",
+            "batch_timeout_seconds",
             "max_image_pixels",
             "max_image_dimension",
             "multipart_overhead_bytes",

@@ -98,16 +98,20 @@ export function ResultMap({ prediction, estimateTier, coverageVisible, onCoverag
     markerRef.current = new maplibregl.Marker({ element: markerElement, anchor: "center" })
       .setLngLat([prediction.lon, prediction.lat])
       .addTo(map);
-    const mobileOffset: [number, number] = window.innerWidth <= 760
-      ? [0, -Math.min(280, window.innerHeight * 0.32)]
-      : [0, 0];
-    const camera = {
-      center: [prediction.lon, prediction.lat] as [number, number],
-      zoom: 15.4,
-      offset: mobileOffset,
+    const focusPrediction = (zoom: number, duration: number) => {
+      const mobileOffset: [number, number] = window.innerWidth <= 760
+        ? [0, -Math.min(280, window.innerHeight * 0.32)]
+        : [0, 0];
+      // jumpTo ignores animation offsets, including the bottom-sheet clearance.
+      map.easeTo({
+        center: [prediction.lon, prediction.lat], zoom, offset: mobileOffset,
+        duration, essential: false,
+      });
     };
-    if (prefersReducedMotion()) map.jumpTo(camera);
-    else map.easeTo({ ...camera, duration: 1200, essential: false });
+    focusPrediction(15.4, prefersReducedMotion() ? 0 : 1200);
+    const keepMarkerVisible = () => focusPrediction(map.isZooming() ? 15.4 : map.getZoom(), 0);
+    map.on("resize", keepMarkerVisible);
+    return () => { map.off("resize", keepMarkerVisible); };
   }, [estimateTier, prediction]);
 
   useEffect(() => {
@@ -160,7 +164,7 @@ export function ResultMap({ prediction, estimateTier, coverageVisible, onCoverag
       const content = document.createElement("div");
       content.className = "coverage-popup";
       const title = document.createElement("strong");
-      title.textContent = `${Number(feature.properties.references).toLocaleString("en-US")} references`;
+      title.textContent = `${Number(feature.properties.references).toLocaleString("en-US")} references in frozen gallery`;
       const detail = document.createElement("span");
       detail.textContent = `${providers} · ${String(feature.properties.density)} relative density`;
       content.append(title, detail);
@@ -218,20 +222,20 @@ export function ResultMap({ prediction, estimateTier, coverageVisible, onCoverag
           className={`map-action ${coverageVisible ? "is-active" : ""}`}
           aria-pressed={coverageVisible}
           onClick={() => onCoverageToggle(!coverageVisible)}
-          title="Toggle reference coverage"
+          title="Toggle frozen-gallery coverage"
         >
           <LayersIcon /> <span>Coverage</span>
         </button>
       </div>
       {coverageVisible && (
         <div className="coverage-legend" role="note">
-          <strong>Reference coverage</strong>
+          <strong>Frozen-gallery coverage</strong>
           {coverageError ? (
             <span>Coverage data is unavailable.</span>
           ) : coverage ? (
             <>
               <div><i className="density-sparse" />Sparse <i className="density-medium" />Medium <i className="density-dense" />Dense</div>
-              <span>{coverage.reference_count.toLocaleString("en-US")} references · coverage ≠ accuracy</span>
+              <span>{coverage.reference_count.toLocaleString("en-US")} references · may differ from active index · coverage ≠ accuracy</span>
             </>
           ) : (
             <span>Loading verified gallery cells…</span>

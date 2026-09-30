@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoSnap · слепая оценка снимков</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">GeoSnap <span>оценка снимков</span></div>
+    <div class="progress" aria-live="polite"><span id="progress-text">Загрузка…</span><span id="rater-text"></span></div>
+  </header>
+  <main class="workspace">
+    <section class="viewer" aria-labelledby="viewer-title">
+      <div class="viewer-heading">
+        <h1 id="viewer-title">Есть ли здесь признаки места?</h1>
+        <p>Оцени только кадр. Правильный адрес, ответы моделей и исход поиска скрыты.</p>
+      </div>
+      <div class="image-stage">
+        <img id="query-image" alt="Кадр для оценки геолокализуемости" hidden>
+        <div id="image-loading" class="image-state">Загружаем снимок…</div>
+      </div>
+      <p class="viewer-note">Техническое качество и полезность для геолокации — разные вещи. Чёткая стена может быть бесполезна; немного смазанный перекрёсток — полезен.</p>
+    </section>
+    <section class="assessment" aria-label="Форма оценки">
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <form id="annotation-form" novalidate>
+        <fieldset class="score-fieldset">
+          <legend>Насколько кадр помогает определить место?</legend>
+          <p class="help">Оцени различимые и устойчивые признаки, а не красоту фотографии.</p>
+          <div class="score-options">
+            <label><input type="radio" name="geolocatability" value="0" required><span><b>0</b> Непригоден</span></label>
+            <label><input type="radio" name="geolocatability" value="1"><span><b>1</b> Очень слабый</span></label>
+            <label><input type="radio" name="geolocatability" value="2"><span><b>2</b> Возможно полезен</span></label>
+            <label><input type="radio" name="geolocatability" value="3"><span><b>3</b> Хороший</span></label>
+            <label><input type="radio" name="geolocatability" value="4"><span><b>4</b> Очень информативный</span></label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Что мешает?</legend>
+          <p class="help">Можно выбрать несколько причин или ничего.</p>
+          <div id="reason-options" class="chip-grid"></div>
+        </fieldset>
+        <fieldset>
+          <legend>Какие признаки помогают?</legend>
+          <div id="evidence-options" class="chip-grid"></div>
+        </fieldset>
+        <fieldset class="retake-fieldset">
+          <legend>Попросить другой снимок?</legend>
+          <div class="radio-row">
+            <label><input type="radio" name="retake" value="yes" required> Да</label>
+            <label><input type="radio" name="retake" value="no"> Нет</label>
+          </div>
+          <label class="action-label" for="retake-action">Что именно попросить?</label>
+          <select id="retake-action" disabled><option value="">Выбери действие</option></select>
+        </fieldset>
+        <label class="note-label" for="note">Короткая заметка <span>необязательно</span></label>
+        <textarea id="note" maxlength="500" rows="2" placeholder="Например: фасад виден, но вся улица закрыта автобусом"></textarea>
+        <div class="form-footer">
+          <p>Не пытайся угадать адрес. Если признаков мало, оцени кадр как слабый.</p>
+          <button id="save-button" type="submit">Сохранить и открыть следующий</button>
+        </div>
+      </form>
+      <div id="complete-state" class="complete" hidden>
+        <h2>Разметка завершена</h2>
+        <p>Все кадры этого набора оценены. Ответы сохранены отдельно от ответов других аннотаторов.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

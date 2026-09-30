@@ -45,6 +45,9 @@ def test_exact_cosine_search_and_compatibility_import() -> None:
     assert matches[0].metadata["index_id"] == "moscow-test"
     assert index.build_metadata["faiss_index_type"] == "IndexFlatIP"
     assert index.build_metadata["normalization"] == "L2"
+    np.testing.assert_allclose(index.reconstruct_rows([2, 0]), [[0, 0, 1], [1, 0, 0]])
+    with pytest.raises(FaissIndexError, match="valid rows"):
+        index.reconstruct_rows([3])
 
 
 def test_full_gallery_rank_diagnostics_do_not_depend_on_returned_top_k() -> None:
@@ -235,6 +238,9 @@ def test_process_isolated_worker_keeps_index_loaded_and_returns_typed_results(
         second = worker.search_one(np.asarray([0.0, 0.0, 1.0], dtype=np.float32), k=2)
         assert first[0].reference_id == "red"
         assert second[0].reference_id == "blue"
+        np.testing.assert_allclose(worker.reconstruct_rows([2, 0]), [[0, 0, 1], [1, 0, 0]])
+        with pytest.raises(FaissIndexError, match="valid rows"):
+            worker.reconstruct_rows([-1])
         assert worker.is_ready
     finally:
         worker.close()

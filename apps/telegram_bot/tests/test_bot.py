@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -19,9 +20,21 @@ from apps.telegram_bot.bot import (
     PENDING_PHOTO_KEY,
     TEXT,
     GeoSnapBot,
+    _JsonFormatter,
 )
 from apps.telegram_bot.config import BotSettings
 from apps.telegram_bot.map_links import google_maps_url, yandex_maps_url
+
+
+def test_telegram_token_is_redacted_from_http_logs() -> None:
+    token = "123456:secret-value"
+    record = logging.LogRecord(
+        "httpx", logging.INFO, __file__, 1,
+        "POST https://api.telegram.org/bot%s/getMe", (token,), None,
+    )
+    output = _JsonFormatter(token).format(record)
+    assert token not in output
+    assert "[REDACTED]" in output
 
 
 class FakeBackend:

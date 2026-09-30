@@ -13,10 +13,15 @@ TELEGRAM_USER_COOLDOWN_SECONDS=8
 TELEGRAM_MAX_CONCURRENCY=2
 TELEGRAM_MAX_DOWNLOAD_BYTES=10485760
 TELEGRAM_BACKEND_TIMEOUT_SECONDS=30
+TELEGRAM_BATCH_TIMEOUT_SECONDS=210
+TELEGRAM_MAX_BATCH_BYTES=41943040
+TELEGRAM_COLLECTION_TTL_SECONDS=600
 TELEGRAM_BOT_PUBLIC_URL=https://t.me/<public-bot-name>
 ```
 
 `TELEGRAM_BOT_PUBLIC_URL` is optional and public; it only enables the website CTA. `TELEGRAM_BOT_TOKEN` is required for polling and must never enter Git, logs, a Dockerfile or the frontend. `TELEGRAM_VALIDATE_ONLY=true` validates configuration without contacting Telegram.
+
+The opt-in cleaned SAGE-L local deployment overrides the single-photo timeout to 120 seconds and the multi-photo timeout to 620 seconds because CPU inference is much slower. These are separate from the default frozen release settings above. Docker Desktop is currently stopped on the original Mac; the bot is not polling until it is started again.
 
 ## Language and commands
 
@@ -32,9 +37,17 @@ Every supported response is localized in Russian and English:
 
 The highest-resolution Telegram photo variant is downloaded in memory, checked before and after download, forwarded with a generated request ID, and released after the handler returns. Telegram metadata and user location are not localization inputs.
 
+## Several views from one place
+
+Send an album containing up to **10 photos**, wait for the counter to show the complete set, then press **Locate / Определить**. The bot does not guess when an album has finished arriving. For separate messages, start with `/photos`, send the photos, then `/done`; use `/cancel` to discard the set. Take different directions while staying in the same place. Telegram compression is supported; send photos rather than file attachments.
+
+Sets are isolated by user, chat and forum topic; callback buttons are bound to the owning set. Repeated Telegram file IDs are ignored; the backend also removes exact decoded-pixel duplicates. A different album cannot silently join an unfinished album. Up to 128 pending sets can be retained; inactive sets expire after 10 minutes and are purged on the next update. A restart discards them. Only file references are held before submission, and image bytes exist transiently during inference. Telegram itself has its own storage policy.
+
+For multiple unique photos, the backend first checks agreement among the per-photo selected locations; if none wins unambiguously, it combines lower-ranked candidate hypotheses at the location level. The bot displays support counts, a tentative estimate and map links when one place wins; conflicting evidence requests a different view. It never sends a native location pin for uncalibrated multi-photo consensus. One unique image retains the single-photo behavior. Details and API examples: [multi-photo protocol](multi_photo.md).
+
 ## Capacity and privacy
 
-The bot has a per-user cooldown, a process-wide semaphore and a 10 MiB default download limit. Requests still pass through backend rate and concurrency controls. Logs contain event category and request ID, never photo bytes, token, username or chat content. There is no user database.
+The bot has a per-user cooldown, a process-wide semaphore, a 10 MiB default per-photo download limit and a 40 MiB set limit. Requests still pass through backend rate and concurrency controls. Only one request per user runs at a time; a pending set remains available if submission is rejected by cooldown. Logs contain event category and request ID, never photo bytes, token, username or chat content. There is no user database.
 
 ## Tests and future webhook migration
 

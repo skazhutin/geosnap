@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GeoSnap — покрытие Москвы</title>
+<link rel="stylesheet" href="leaflet.css">
+<style>
+*{box-sizing:border-box}body{margin:0;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#183347;background:#edf3f6}main{display:grid;grid-template-columns:296px 1fr;height:100vh;height:100dvh}aside{padding:28px 24px;background:#fff;display:flex;flex-direction:column;gap:24px;overflow:auto;border-right:1px solid #d4e1e8}h1{font-size:24px;line-height:1.15;font-weight:650;margin:0 0 12px}p{margin:0}.brand{font-size:15px;font-weight:600;color:#196678;margin-bottom:18px}.muted{color:#5c7080;font-size:13px}.counts{font-size:30px;font-weight:600;letter-spacing:-1px;font-variant-numeric:tabular-nums}.sources{display:grid;gap:14px}.source{display:grid;grid-template-columns:20px 1fr auto;align-items:center;gap:9px;cursor:pointer}.source input{accent-color:var(--source);width:17px;height:17px}.source small{display:block;font-size:11px;color:#6d7e89}.source b{font-size:13px;font-weight:500;font-variant-numeric:tabular-nums}h2{font-size:14px;font-weight:600;margin:0 0 12px}button,select{font:inherit;border:1px solid #bccdd8;border-radius:7px;background:#fff;color:#183347;padding:10px 12px;cursor:pointer;min-height:42px}button:hover{background:#eef5f8}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid #58adcc;outline-offset:3px}select{width:100%;margin-top:8px}#map{height:100%;background:#e6eef2}.hint{font-size:13px;color:#4d6476}.footnote{margin-top:auto;font-size:12px;color:#6a7b86}.leaflet-container{font-family:inherit}.leaflet-popup-content{line-height:1.6}.key{display:flex;gap:8px;align-items:center;font-size:12px;color:#526979}.key span{display:block;width:24px;border-top:2px dashed #305770}.status{min-height:36px;font-size:12px;color:#577485}#map-shell{position:relative;min-width:0}.map-label{position:absolute;z-index:500;right:14px;top:14px;background:#fffffff2;padding:9px 13px;border-radius:6px;box-shadow:0 1px 8px #18334720;font-size:12px;pointer-events:none}.quick{display:grid;grid-template-columns:1fr 1fr;gap:8px}.quick button{font-size:13px;padding:9px 5px}@media(max-width:640px){main{grid-template-columns:1fr;grid-template-rows:auto 1fr}aside{padding:14px 16px;gap:12px;overflow:visible;border-right:0;border-bottom:1px solid #d4e1e8}.brand,.footnote,.counts-block,.key,.hint{display:none}h1{font-size:19px;margin:0}header .muted{font-size:12px}.sources{display:flex;gap:12px;flex-wrap:wrap}.source{grid-template-columns:18px 1fr;gap:5px;font-size:12px}.source b,.source small{display:none}.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:center}.controls h2{display:none}select{margin:0;font-size:12px}.status{display:none}.map-label{font-size:10px;max-width:170px}#map-shell{min-height:320px}}
+</style>
+</head>
+<body><main>
+<aside>
+<header><div class="brand">GeoSnap</div><h1>Покрытие Москвы</h1><p class="muted">Исследовательская галерея G2<br>100 000 снимков с координатами</p></header>
+<section class="counts-block"><div class="counts" id="visible-count">100 000</div><p class="muted">снимков выбранных источников</p></section>
+<section><h2>Источники</h2><div class="sources">
+<label class="source" style="--source:#087f8c"><input type="checkbox" checked data-source="0"><span>Mapillary</span><b id="count-0"></b></label>
+<label class="source" style="--source:#c66013"><input type="checkbox" checked data-source="1"><span>KartaView</span><b id="count-1"></b></label>
+<label class="source" style="--source:#7753b9"><input type="checkbox" checked data-source="2"><span>MSLS<small>Только исследовательские данные</small></span><b id="count-2"></b></label>
+</div></section>
+<section class="controls"><div><h2>Отображение</h2><label for="mode" class="muted">Слой покрытия</label><select id="mode"><option value="points">Точки съёмки</option><option value="radius">Радиус 100 м</option></select></div><div class="quick"><button id="all">Вся Москва</button><button id="center">Центр</button></div></section>
+<div class="key"><span></span>Граница Москвы R102269</div>
+<p class="hint">Нажмите на карту: появится расстояние до ближайшего снимка выбранных источников.</p>
+<p class="status" id="status" role="status">Загрузка карты…</p>
+<p class="footnote">Радиус 100 м показывает близость снимков, а не вероятность правильного ответа модели. Данные карты сохранены локально; для подложки улиц нужен интернет.</p>
+</aside>
+<section id="map-shell" aria-label="Интерактивная карта снимков Москвы"><div class="map-label">G2 · исследование · без тестовых запросов</div><div id="map"></div></section>
+</main>
+<script src="leaflet.js"></script>
+<script>
+const data=__DATA__;
+const colors=['#087f8c','#c66013','#7753b9'], names=['Mapillary','KartaView','MSLS'];
+const map=L.map('map',{preferCanvas:true,zoomControl:true}).setView([55.65,37.4],10);
+const base=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).addTo(map);
+base.on('tileerror',()=>{document.getElementById('status').textContent='Подложка улиц недоступна. Координаты и граница остаются на карте.'});
+const boundary=L.geoJSON(data.boundary,{style:{color:'#305770',weight:2,dashArray:'6 5',fill:false}}).addTo(map);
+const renderer=L.canvas({padding:0.3});
+const layers=[L.layerGroup().addTo(map),L.layerGroup().addTo(map),L.layerGroup().addTo(map)];
+let radiusLayer=L.layerGroup(), active=[true,true,true], selectedCircle=null;
+data.counts.forEach((n,i)=>document.getElementById('count-'+i).textContent=n.toLocaleString('ru-RU'));
+for(const p of data.points){L.circleMarker([p[0],p[1]],{renderer,radius:2,stroke:false,fillColor:colors[p[2]],fillOpacity:0.65,interactive:false}).addTo(layers[p[2]])}
+function updateRadius(){radiusLayer.clearLayers();if(document.getElementById('mode').value!=='radius')return;const bounds=map.getBounds().pad(0.1);for(const p of data.points){if(active[p[2]]&&bounds.contains([p[0],p[1]])){L.circle([p[0],p[1]],{renderer,radius:100,stroke:false,fillColor:colors[p[2]],fillOpacity:0.12,interactive:false}).addTo(radiusLayer)}}if(!map.hasLayer(radiusLayer))radiusLayer.addTo(map)}
+function update(){active=Array.from(document.querySelectorAll('[data-source]'),e=>e.checked);const total=data.counts.reduce((n,c,i)=>n+(active[i]?c:0),0);document.getElementById('visible-count').textContent=total.toLocaleString('ru-RU');layers.forEach((l,i)=>{if(active[i])l.addTo(map);else map.removeLayer(l)});updateRadius();document.getElementById('status').textContent=total?`${total.toLocaleString('ru-RU')} снимков. Увеличьте карту для просмотра отдельных улиц.`:'Выберите хотя бы один источник.'}
+document.querySelectorAll('[data-source]').forEach(el=>el.addEventListener('change',update));
+document.getElementById('mode').addEventListener('change',updateRadius);map.on('moveend',updateRadius);
+document.getElementById('all').addEventListener('click',()=>map.fitBounds(boundary.getBounds(),{padding:[24,24]}));
+document.getElementById('center').addEventListener('click',()=>map.setView([55.751,37.619],13));
+map.on('click',e=>{let best=null,distance=Infinity;for(const p of data.points){if(active[p[2]]){const d=map.distance(e.latlng,[p[0],p[1]]);if(d<distance){distance=d;best=p}}}if(!best)return;if(selectedCircle)map.removeLayer(selectedCircle);selectedCircle=L.circle([best[0],best[1]],{radius:100,color:colors[best[2]],weight:2,fillOpacity:0.15}).addTo(map);const label=distance<1000?`${Math.round(distance)} м`:`${(distance/1000).toFixed(2)} км`;L.popup().setLatLng(e.latlng).setContent(`<b>Ближайший снимок: ${label}</b><br>${names[best[2]]}${best[2]===2?' · research-only':''}<br>${best[0].toFixed(6)}, ${best[1].toFixed(6)}`).openOn(map)});
+map.fitBounds(boundary.getBounds(),{padding:[24,24]});update();
+</script></body></html>

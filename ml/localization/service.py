@@ -84,6 +84,7 @@ class LocalizationService:
         expected_index_id: str | None = None,
         geometric_reranker: Any | None = None,
         query_aggregation: str = "single",
+        faiss_worker_timeout_seconds: float = 60.0,
     ) -> None:
         if top_k < 1:
             raise ValueError("top_k must be >= 1")
@@ -97,6 +98,7 @@ class LocalizationService:
         self.expected_index_id = expected_index_id
         self.geometric_reranker = geometric_reranker
         self.query_aggregation = query_aggregation
+        self.faiss_worker_timeout_seconds = faiss_worker_timeout_seconds
         self.process_isolate_faiss = (
             sys.platform == "darwin" if process_isolate_faiss is None else process_isolate_faiss
         )
@@ -113,7 +115,9 @@ class LocalizationService:
         index: FaissExactIndex | FaissIndexWorker
         index_started = perf_counter()
         if self.process_isolate_faiss:
-            index = FaissIndexWorker(self.index_dir).start()
+            index = FaissIndexWorker(
+                self.index_dir, timeout_seconds=self.faiss_worker_timeout_seconds
+            ).start()
         else:
             index = FaissExactIndex.load(self.index_dir)
         self.index_load_ms = _elapsed_ms(index_started)

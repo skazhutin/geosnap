@@ -4,6 +4,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .playwright-cli/
+.codex/
 *.pyc
 .DS_Store
 
@@ -30,6 +31,12 @@ data/embeddings/**
 data/indexes/**
 data/evaluation/generated/**
 data/evaluation/moscow_real_*/**
+data/evaluation/moscow_research_*/**
+data/evaluation/moscow_gallery_scale_*/**
+data/evaluation/moscow_night_*/**
+# Generated research runs include images, local environments and model caches.
+# The checked-in lightweight evaluation descriptions remain publishable.
+data/evaluation/*/
 *.faiss
 *.index
 *.npy

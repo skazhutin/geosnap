@@ -50,16 +50,22 @@ def _worker_main(directory: str, connection: Any) -> None:
                 return
             request_id = request.get("request_id")
             try:
-                if request.get("operation") != "search":
+                if request.get("operation") == "search":
+                    batches = index.search(request["queries"], k=int(request["k"]))
+                    connection.send(
+                        {
+                            "kind": "result",
+                            "request_id": request_id,
+                            "batches": [[item.to_dict() for item in batch] for batch in batches],
+                        }
+                    )
+                elif request.get("operation") == "reconstruct":
+                    connection.send({
+                        "kind": "vectors", "request_id": request_id,
+                        "vectors": index.reconstruct_rows(request["rows"]),
+                    })
+                else:
                     raise ValueError("unknown worker operation")
-                batches = index.search(request["queries"], k=int(request["k"]))
-                connection.send(
-                    {
-                        "kind": "result",
-                        "request_id": request_id,
-                        "batches": [[item.to_dict() for item in batch] for batch in batches],
-                    }
-                )
             except BaseException as exc:
                 connection.send(
                     {
@@ -76,7 +82,9 @@ def _worker_main(directory: str, connection: Any) -> None:
 
 
 def _read_sidecars(directory: Path) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
-    return _read_committed_sidecars(directory)
+    # The spawned child verifies the index bytes before announcing readiness.
+    # Avoid hashing multi-GB indexes twice in the parent before that handshake.
+    return _read_committed_sidecars(directory, verify_index=False)
 
 
 class FaissIndexWorker:
@@ -208,6 +216,37 @@ class FaissIndexWorker:
 
     def search_one(self, query: np.ndarray, *, k: int = 10) -> list[RetrievalResult]:
         return self.search(query, k=k)[0]
+
+    def reconstruct_rows(self, rows: list[int]) -> np.ndarray:
+        """Fetch a bounded set of vectors without importing FAISS into this process."""
+
+        positions = [int(row) for row in rows]
+        if len(positions) > 100 or any(row < 0 or row >= self.size for row in positions):
+            raise FaissIndexError("reconstruction requires at most 100 valid rows")
+        request_id = uuid.uuid4().hex
+        with self._lock:
+            if not self.is_ready or self._parent_connection is None:
+                raise FaissIndexError("FAISS index worker is not ready")
+            connection = self._parent_connection
+            try:
+                connection.send({"operation": "reconstruct", "request_id": request_id, "rows": positions})
+                if not connection.poll(self.timeout_seconds):
+                    self._restart_and_raise("FAISS reconstruction worker timed out")
+                response = connection.recv()
+            except (BrokenPipeError, EOFError, OSError) as exc:
+                self._restart_and_raise("FAISS reconstruction worker transport failed", cause=exc)
+            if not isinstance(response, Mapping) or response.get("request_id") != request_id:
+                self._restart_and_raise("FAISS reconstruction worker protocol mismatch")
+            if response.get("kind") == "error":
+                raise FaissIndexError(
+                    f"FAISS worker reconstruction failed: {response.get('error_type')}: {response.get('message')}"
+                )
+            if response.get("kind") != "vectors":
+                self._restart_and_raise("FAISS reconstruction worker protocol mismatch")
+            vectors = np.asarray(response["vectors"], dtype=np.float32)
+            if vectors.shape != (len(positions), self.descriptor_dim) or not np.isfinite(vectors).all():
+                self._restart_and_raise("FAISS reconstruction worker returned invalid vectors")
+            return vectors
 
     def close(self, *, force: bool = False) -> None:
         process = self._process

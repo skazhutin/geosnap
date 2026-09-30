@@ -34,6 +34,10 @@ class BotSettings:
     max_concurrency: int = 2
     max_download_bytes: int = 10 * 1024 * 1024
     backend_timeout_seconds: float = 30.0
+    batch_timeout_seconds: float = 210.0
+    max_batch_bytes: int = 40 * 1024 * 1024
+    collection_ttl_seconds: float = 600.0
+    max_pending_collections: int = 128
     validate_only: bool = False
     log_level: str = "INFO"
 
@@ -46,6 +50,9 @@ class BotSettings:
             max_concurrency=_int("TELEGRAM_MAX_CONCURRENCY", 2),
             max_download_bytes=_int("TELEGRAM_MAX_DOWNLOAD_BYTES", 10 * 1024 * 1024),
             backend_timeout_seconds=_float("TELEGRAM_BACKEND_TIMEOUT_SECONDS", 30.0),
+            batch_timeout_seconds=_float("TELEGRAM_BATCH_TIMEOUT_SECONDS", 210.0),
+            max_batch_bytes=_int("TELEGRAM_MAX_BATCH_BYTES", 40 * 1024 * 1024),
+            collection_ttl_seconds=_float("TELEGRAM_COLLECTION_TTL_SECONDS", 600.0),
             validate_only=_bool("TELEGRAM_VALIDATE_ONLY", False),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
         )
@@ -64,6 +71,10 @@ class BotSettings:
                 self.max_concurrency,
                 self.max_download_bytes,
                 self.backend_timeout_seconds,
+                self.batch_timeout_seconds,
+                self.max_batch_bytes,
+                self.collection_ttl_seconds,
+                self.max_pending_collections,
             )
         ):
             raise ValueError("Telegram bot limits must be positive")

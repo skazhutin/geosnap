@@ -49,13 +49,16 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = "-ra --ignore=ml/research"
 pythonpath = [".", "apps/backend"]
 testpaths = ["ml", "apps/backend/tests", "apps/telegram_bot/tests"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+# Historical research sources are preserved with their original evidence hashes;
+# their isolated environments and artifact-dependent tests are not product CI.
+extend-exclude = ["data", "ml/research"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

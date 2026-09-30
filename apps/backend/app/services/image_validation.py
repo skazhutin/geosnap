@@ -65,6 +65,17 @@ def _signature_format(payload: bytes) -> str | None:
 
 
 async def read_image_part(request: Request, settings: Settings) -> UploadedPart:
+    return (await read_image_parts(request, settings))[0]
+
+
+async def read_image_parts(
+    request: Request,
+    settings: Settings,
+    *,
+    field_name: str = "image",
+    max_parts: int = 1,
+    total_limit: int | None = None,
+) -> list[UploadedPart]:
     content_type = request.headers.get("content-type", "")
     if len(content_type) > 512 or "\r" in content_type or "\n" in content_type:
         raise InvalidImageError("Malformed Content-Type header.")
@@ -77,7 +88,7 @@ async def read_image_part(request: Request, settings: Settings) -> UploadedPart:
         raise InvalidImageError("Malformed multipart boundary.")
 
     header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8", "strict")
-    body_limit = settings.max_upload_bytes + settings.multipart_overhead_bytes
+    body_limit = (total_limit or settings.max_upload_bytes) + settings.multipart_overhead_bytes
     declared_length = request.headers.get("content-length")
     if declared_length:
         try:
@@ -107,10 +118,11 @@ async def read_image_part(request: Request, settings: Settings) -> UploadedPart:
         raise InvalidImageError("Malformed multipart upload.")
 
     image_parts: list[UploadedPart] = []
+    payload_size = 0
     for part in message.iter_parts():
         if part.get_content_disposition() != "form-data":
             continue
-        if part.get_param("name", header="content-disposition") != "image":
+        if part.get_param("name", header="content-disposition") != field_name:
             continue
         try:
             payload = part.get_payload(decode=True)
@@ -120,6 +132,9 @@ async def read_image_part(request: Request, settings: Settings) -> UploadedPart:
             raise InvalidImageError("The image field is empty.")
         if len(payload) > settings.max_upload_bytes:
             raise ImageTooLargeError()
+        payload_size += len(payload)
+        if total_limit is not None and payload_size > total_limit:
+            raise ImageTooLargeError("The combined image payload exceeds the batch limit.")
         image_parts.append(
             UploadedPart(
                 payload=payload,
@@ -127,10 +142,12 @@ async def read_image_part(request: Request, settings: Settings) -> UploadedPart:
                 filename=part.get_filename(),
             )
         )
+        if len(image_parts) > max_parts:
+            raise InvalidImageError(f"Provide at most {max_parts} image fields named '{field_name}'.")
 
-    if len(image_parts) != 1:
-        raise InvalidImageError("Provide exactly one multipart field named 'image'.")
-    return image_parts[0]
+    if not image_parts:
+        raise InvalidImageError(f"Provide a multipart image field named '{field_name}'.")
+    return image_parts
 
 
 def prepare_image(upload: UploadedPart, settings: Settings) -> PreparedImage:

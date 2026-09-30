@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.geosnap.research-dashboard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/Daniil/Documents/VSCode/geosnap/data/evaluation/geographic_v8_20260928/runtime/bin/python</string>
+    <string>-m</string>
+    <string>ml.research.run_dashboard.server</string>
+    <string>--port</string>
+    <string>8771</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/Daniil/Documents/VSCode/geosnap</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/Daniil/Documents/VSCode/geosnap/data/evaluation/research_run_dashboard/server.log</string>
+  <key>StandardErrorPath</key><string>/Users/Daniil/Documents/VSCode/geosnap/data/evaluation/research_run_dashboard/server.error.log</string>
+</dict>
+</plist>

@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "protocol_id": "moscow-v5-raw-first-20260905",
+  "status": "preregistered_before_new_experiments",
+  "baseline": {
+    "config": "configs/moscow_production_frozen.json",
+    "sha256": "9c0c38f93d4c4f76eff8ef821508da0aafdd104f04ddd932b48d2834bbd2984e",
+    "preserve_code_and_artifacts": true,
+    "compare_on_identical_queries": true,
+    "gallery": "unchanged exact production gallery; expansion evaluated separately"
+  },
+  "primary_objective": "all-query raw localization within 100m, then within 50m, within 25m, catastrophic rate, median and p90 error",
+  "required_metrics": {
+    "raw": ["accuracy_25m", "accuracy_50m", "accuracy_100m", "median_error_m", "p90_error_m", "catastrophic_gt500m_rate"],
+    "retrieval_radius_m": 100,
+    "retrieval_k": [1, 5, 10, 20, 50, 100],
+    "positive_rank": "complete-gallery first positive, histogram and quantiles; no-positive mass explicit, never dropped from recall denominator",
+    "product": "maximize empirical answer rate at conditional within100m >=0.90; tied confidence scores inseparable; accepted gt500m rate and median/p90; uncertainty and denominators always reported",
+    "failures": "retain every eligible query; missing predictions count as raw failures and infinite error; abstention never improves raw metrics"
+  },
+  "data": {
+    "historical_tests": "v1/v2/v3/v4 and probe permanently opened; historical reporting only, not selection",
+    "exploration": "historical development only plus newly assigned development; historical calibration is not new calibration",
+    "new_queries": "real decodable Moscow street photos, no nearby-positive requirement, no model-score or confidence filtering",
+    "query_provenance": "whole provider sequence/session and exact/near-image duplicate exclusion from all historical galleries, embeddings and queries; photographer holdout where metadata permits",
+    "new_splits": "deterministic spatial blocks with >=250m cross-split embargo and whole capture-sequence assignment, before inference; seed 20260905",
+    "test_target": 1200,
+    "calibration_target": 800,
+    "development_target": 1200,
+    "targets_are_not_permission_to_relax_independence": true,
+    "sampling": "record source-frame population and inclusion/exclusion counts; report area/provider strata and coverage-zero queries; provider imagery is a proxy for user-uploaded photos, not an unbiased citywide sample",
+    "gallery_acquisition": "predeclared whole-AOI coverage/density/heading/sequence/time diversity strategy independent of calibration or test coordinates and outcomes; never use query sequences",
+    "contamination": "audit upstream checkpoint training sources, especially MSLS Moscow; unknown foundation pretraining exposure is disclosed; MSLS cannot be a clean final test without contamination clearance",
+    "test_sealing": "private manifest and image access through fixed one-shot ledger; public hashes/counts only, no retrieval/embedding/qualitative inspection until freeze"
+  },
+  "search": {
+    "data_hypothesis": ["coverage and heading/time/provider diversity audit", "production versus expanded gallery with same SAGE", "random versus diversity-balanced reference sampling at matched gallery sizes", "coverage ceiling versus retrieval miss versus mode-selection loss"],
+    "architecture_hypothesis": ["official diverse retrievers including new untested checkpoints", "multi-scale and aspect-preserving query/reference processing", "descriptor and rank fusion", "database augmentation/query expansion", "learned mode selection optimizing coordinates rather than abstention", "local geometric matching on deep candidate pools", "development-only metric adaptation or fine-tuning if justified"],
+    "factorial": "same queries: baseline model/old gallery; baseline model/new gallery; candidate model/old gallery; candidate model/new gallery",
+    "validation": "geographically grouped outer folds, fit transforms only on training folds; inner folds for learned hyperparameters/thresholds; OOF product curves labeled exploratory, not calibrated final performance",
+    "selection": "raw within100m first; development-fold consistency and paired geographic bootstrap; no small-stratum hard veto; at most one architecture goes to new calibration",
+    "stopping": "resolve both hypotheses and test complementary model, data, fusion, preprocessing, mode-selection and verification families; document unavailable or nondeployable methods and measured diminishing returns"
+  },
+  "freeze": {
+    "architecture_before_calibration": "hash code, dependencies, checkpoint, preprocessing, gallery/index, learned parameters and confidence family; calibration selects numeric threshold only",
+    "before_test": "hash both baseline and single candidate, all artifacts, calibration threshold and selection report; exactly one baseline/candidate test transaction",
+    "after_test": "no tuning, alternate winner selection, threshold optimization or test redefinition; diagnostic test precision-coverage oracle forbidden"
+  },
+  "promotion": {
+    "minimum_raw_100m_gain_pp": 5.0,
+    "paired_geographic_bootstrap_95ci_lower_gain_pp": 0.0,
+    "raw_catastrophic_rate": "candidate no worse than baseline",
+    "product": "nonzero accepted count, frozen-threshold empirical conditional100m >=0.90 and answer rate no worse than exact baseline; confidence intervals reported, not guarantees",
+    "licensing": "official source/checkpoint hash and separate code, weights, dependencies, imagery terms audited; unresolved production rights exclude promotion",
+    "deployment": "CPU or available accelerator smoke, deterministic independent-image descriptors, bounded memory/latency, tests, artifact manifest and rollback",
+    "on_failure": "keep production intact; publish honest negative result, no fabricated improvement"
+  }
+}

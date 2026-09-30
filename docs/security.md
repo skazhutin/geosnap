@@ -28,7 +28,7 @@ SAGE code is loaded from a verified snapshot of exact revision `c7d6241c4885526d
 
 ## Reference thumbnails
 
-Only the 20,487 indexed production reference IDs appear in the generated thumbnail manifest. Each ID maps to a SHA-256-derived filename under a fixed thumbnail root. The service validates the full mapping against loaded reference metadata and a strict relative filename pattern. The HTTP route accepts an opaque ID and asks the service for a known mapping; it never concatenates user input into a filesystem path and never fetches a user-supplied or metadata URL. This removes path-traversal and SSRF behavior. Unknown IDs fail with 404 and no storage path disclosure.
+Only the 20,487 indexed **frozen-release** reference IDs appear in its generated thumbnail manifest. Each ID maps to a SHA-256-derived filename under a fixed thumbnail root. The service validates the full mapping against loaded reference metadata and a strict relative filename pattern. The HTTP route accepts an opaque ID and asks the service for a known mapping; it never concatenates user input into a filesystem path and never fetches a user-supplied or metadata URL. This removes path-traversal and SSRF behavior. Unknown IDs fail with 404 and no storage path disclosure. The separate cleaned research runtime has no matching thumbnail bundle and does not advertise previews.
 
 Provider attribution, license, and source links remain API fields. Thumbnail production strips metadata, bounds dimensions to 480x320, and uses deterministic WebP settings. Operators remain responsible for compliance with the recorded provider/license terms.
 

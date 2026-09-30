@@ -12,7 +12,7 @@
 	encode zstd gzip
 
 	request_body {
-		max_size {$PROXY_MAX_REQUEST_BYTES:16000000}
+		max_size {$PROXY_MAX_REQUEST_BYTES:42500000}
 	}
 
 	handle /api/metrics {
@@ -24,7 +24,7 @@
 			header_up X-Forwarded-For {remote_host}
 			transport http {
 				dial_timeout 3s
-				response_header_timeout {$PROXY_BACKEND_TIMEOUT:35s}
+				response_header_timeout {$PROXY_BACKEND_TIMEOUT:185s}
 			}
 		}
 	}

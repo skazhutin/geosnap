@@ -23,7 +23,9 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _safe_load_legacy_numpy_checkpoint(torch: Any, path: Path, map_location: Any) -> Any:
+def _safe_load_legacy_numpy_checkpoint(
+    torch: Any, path: Path, map_location: Any, *, mmap: bool = False
+) -> Any:
     """Load the official checkpoint without enabling arbitrary pickle execution."""
     try:
         import numpy as np
@@ -41,7 +43,7 @@ def _safe_load_legacy_numpy_checkpoint(torch: Any, path: Path, map_location: Any
         type(np.dtype(np.float64)),
     ]
     with torch.serialization.safe_globals(numpy_globals):
-        return torch.load(path, map_location=map_location, weights_only=True)
+        return torch.load(path, map_location=map_location, weights_only=True, mmap=mmap)
 
 
 class SageVitBRetriever(OfficialTorchHubRetriever):
@@ -85,7 +87,7 @@ class SageVitBRetriever(OfficialTorchHubRetriever):
         if artifact_root:
             root = Path(artifact_root).expanduser()
             source_value = source_value or str(root / "models/sage/source")
-            checkpoint_value = checkpoint_value or str(root / "models/sage/SAGE_No-Encoder_Vit-B.pth")
+            checkpoint_value = checkpoint_value or str(root / "models/sage" / self.checkpoint_filename)
         source_dir = Path(source_value).expanduser().resolve() if source_value else None
         checkpoint_path = Path(checkpoint_value).expanduser().resolve() if checkpoint_value else None
         if source_value and (source_dir is None or not (source_dir / "hubconf.py").is_file()):
@@ -136,6 +138,7 @@ class SageVitBRetriever(OfficialTorchHubRetriever):
                     torch,
                     path,
                     map_location or "cpu",
+                    mmap=self.model_name == "sage-vitl",
                 )
 
             torch.hub.load_state_dict_from_url = pinned_load_from_url
@@ -156,3 +159,53 @@ class SageVitBRetriever(OfficialTorchHubRetriever):
                 return super()._hub_load(torch)
             finally:
                 torch.hub.load_state_dict_from_url = original_load_from_url
+
+
+class SageVitLRetriever(SageVitBRetriever):
+    """Pinned SAGE ViT-L used by the versioned, cleaned-gallery candidate."""
+
+    model_name = "sage-vitl"
+    entrypoint = "sage_vitl"
+    checkpoint_filename = "SAGE_No-Encoder_Vit-L.pth"
+    checkpoint_sha256 = "31212d543304258b22cfce63aa9d433527a086832cfaec7fc9bca99fd53286dc"
+    checkpoint = (
+        "huggingface:shunpeng/SAGE@"
+        "2a2ea9964cdbdfd2211e7c625064a9d5e4678245/SAGE_No-Encoder_Vit-L.pth"
+    )
+
+    @property
+    def metadata(self) -> RetrieverMetadata:
+        base = super().metadata
+        return replace(base, extra=dict(base.extra) | {"variant": "ViT-L without cross-image encoder"})
+
+    def embed_dual_resolution(self, image: Any) -> tuple[Any, Any]:
+        """Encode one view at 322 and 504 with one loaded checkpoint.
+
+        The transform is local to this call, so concurrent requests cannot
+        change the shared model's preprocessing state.
+        """
+        self.require_loaded()
+        from torchvision import transforms
+
+        from ml.retrieval.device import import_torch
+        from ml.retrieval.image_io import load_rgb_image
+
+        torch = import_torch()
+        rgb = load_rgb_image(image)
+        normalize = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+        )
+        tensor = normalize(transforms.ToTensor()(rgb))
+        vectors = []
+        for size in (322, 504):
+            resized = transforms.Resize(
+                [size, size], interpolation=transforms.InterpolationMode.BILINEAR,
+                antialias=True,
+            )(tensor)
+            result = self._forward_tensor(resized.unsqueeze(0).to(self.device), torch)
+            vectors.append(
+                self.validate_descriptors(
+                    result.detach().float().cpu().numpy(), expected_rows=1, normalize=True
+                )[0]
+            )
+        return vectors[0], vectors[1]

@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.health import router as health_router
 from app.api.localize import router as localize_router
+from app.api.multi_photo import router as multi_photo_router
 from app.api.thumbnails import router as thumbnails_router
 from app.capacity import LocalizationCapacity
 from app.config import Settings
@@ -55,7 +56,7 @@ def _request_id(request: Request) -> str:
 def _endpoint_label(path: str) -> str:
     if path.startswith("/thumbnails/"):
         return "/thumbnails/{reference_id}"
-    if path in {"/health", "/ready", "/metrics", "/localize"}:
+    if path in {"/health", "/ready", "/metrics", "/localize", "/localize/multi"}:
         return path
     return "other"
 
@@ -187,7 +188,7 @@ def create_app(
         response_status = 500
         endpoint = _endpoint_label(request.url.path)
         try:
-            if request.method == "POST" and request.url.path == "/localize":
+            if request.method == "POST" and request.url.path in {"/localize", "/localize/multi"}:
                 key = client_ip(request, trust_forwarded_for=app_settings.trust_forwarded_for)
                 allowed, retry_after = await application.state.rate_limiter.allow(key)
                 if not allowed:
@@ -230,7 +231,7 @@ def create_app(
             )
         elapsed_ms = (perf_counter() - started) * 1000.0
         response.headers["X-Request-ID"] = request.state.request_id
-        response.headers.setdefault("Cache-Control", "no-store" if endpoint == "/localize" else "no-cache")
+        response.headers.setdefault("Cache-Control", "no-store" if endpoint in {"/localize", "/localize/multi"} else "no-cache")
         application.state.metrics.http_requests.labels(
             method=request.method,
             endpoint=endpoint,
@@ -257,6 +258,7 @@ def create_app(
 
     application.include_router(health_router)
     application.include_router(localize_router)
+    application.include_router(multi_photo_router)
     application.include_router(thumbnails_router)
     return application
 

@@ -222,7 +222,7 @@ function LocationResult({ result, tier }: {
       </div>
       <p className="evidence-copy">
         {tentative
-          ? "GeoSnap found a possible location, but the evidence is below the acceptance threshold. This best guess may be significantly wrong."
+          ? "GeoSnap found a possible location, but its reliability has not been established. This best guess may be significantly wrong."
           : "The accepted result passed GeoSnap’s evidence policy. This is a ranking signal, not a probability."}
       </p>
       <p className="coordinate-label">{tentative ? "Tentative coordinates" : "Coordinates"}</p>
@@ -247,7 +247,7 @@ function LocationResult({ result, tier }: {
       {tentative && (
         <details className="tentative-details">
           <summary>Why is this low confidence?</summary>
-          <p>Visual matches may disagree geographically, evidence can be weaker than the frozen acceptance threshold, and the current Moscow gallery is incomplete.</p>
+          <p>Visual matches may disagree geographically, reference coverage is incomplete, or the active model may not have a calibrated confidence policy.</p>
         </details>
       )}
       {result.matches.length > 0 && (
@@ -270,7 +270,7 @@ function LocationResult({ result, tier }: {
 function AbstentionResult({ phase }: { phase: "low_confidence" | "out_of_coverage" }) {
   const copy = phase === "low_confidence"
     ? {
-        label: "Evidence below acceptance threshold",
+        label: "Uncertain location",
         title: "Not enough evidence",
         body: "Potential matches were found, but they do not support a reliable location. Try another angle with distinctive buildings, signs or street structure.",
       }

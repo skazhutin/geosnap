@@ -150,7 +150,7 @@ describe("GeoSnap product UI", () => {
     })));
     await localize();
     expect(await screen.findByRole("heading", { name: "Tentative location" })).toBeInTheDocument();
-    expect(screen.getByText(/below the acceptance threshold/i)).toBeInTheDocument();
+    expect(screen.getByText(/reliability has not been established/i)).toBeInTheDocument();
     expect(screen.getByText(/may be significantly wrong/i)).toBeInTheDocument();
     expect(screen.getByText("Tentative coordinates")).toBeInTheDocument();
     expect(screen.getByText("55.7012, 37.6654")).toBeInTheDocument();

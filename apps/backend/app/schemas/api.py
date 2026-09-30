@@ -60,11 +60,11 @@ class RuntimeIdentity(StrictModel):
     gallery_count: int = Field(gt=0)
     descriptor_dimension: int = Field(gt=0)
     top_k: int = Field(gt=0)
-    query_aggregation: Literal["single"]
-    geographic_aggregation: Literal["density_aware_mode_vote"]
-    coordinate_estimator: Literal["weighted_medoid"]
-    confidence_feature_count: int = Field(gt=0)
-    confidence_threshold: UnitScore
+    query_aggregation: Literal["single", "dual_resolution_mean"]
+    geographic_aggregation: Literal["density_aware_mode_vote", "top_reference_after_context"]
+    coordinate_estimator: Literal["weighted_medoid", "reference_top1"]
+    confidence_feature_count: int = Field(ge=0)
+    confidence_threshold: UnitScore | None
     reranking_enabled: bool
     approximate_tier_enabled: bool
 
@@ -162,6 +162,7 @@ class Match(StrictModel):
         allowed_source_hosts = {
             "mapillary": {"mapillary.com", "www.mapillary.com"},
             "kartaview": {"kartaview.org", "www.kartaview.org"},
+            "msls": {"mapillary.com", "www.mapillary.com"},
         }
         allowed = allowed_source_hosts.get(self.source.lower())
         if allowed is None or host not in allowed:
@@ -233,3 +234,17 @@ class LocalizeResponse(StrictModel):
         if self.status is ApiStatus.OK and self.prediction is None:
             raise ValueError("an ok response requires a prediction")
         return self
+
+
+class MultiPhotoEvidence(StrictModel):
+    method: Literal["geographic_consensus_v1", "top1_then_geographic_consensus_v2", "single_unique_photo"]
+    submitted_images: int = Field(ge=1, le=10)
+    unique_images: int = Field(ge=1, le=10)
+    duplicate_images: int = Field(ge=0, le=9)
+    supporting_images: int = Field(ge=0, le=10)
+    agreement: Literal["single", "consensus", "ambiguous", "no_candidates"]
+    support_radius_m: float = Field(gt=0)
+
+
+class MultiPhotoResponse(LocalizeResponse):
+    multi_photo: MultiPhotoEvidence

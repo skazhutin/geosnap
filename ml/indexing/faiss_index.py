@@ -206,6 +206,8 @@ def _build_metadata(
 
 def _read_committed_sidecars(
     directory: Path,
+    *,
+    verify_index: bool = True,
 ) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
     """Read one committed artifact generation without importing FAISS."""
 
@@ -238,10 +240,11 @@ def _read_committed_sidecars(
         mapping_bytes = paths["id_mapping.json"].read_bytes()
         reference_bytes = paths["reference_metadata.jsonl"].read_bytes()
         actual_hashes = {
-            "index.faiss": _sha256_file(paths["index.faiss"]),
             "id_mapping.json": hashlib.sha256(mapping_bytes).hexdigest(),
             "reference_metadata.jsonl": hashlib.sha256(reference_bytes).hexdigest(),
         }
+        if verify_index:
+            actual_hashes["index.faiss"] = _sha256_file(paths["index.faiss"])
         for filename, actual_hash in actual_hashes.items():
             expected_hash = expected_hashes.get(filename)
             if not isinstance(expected_hash, str) or expected_hash.lower() != actual_hash:
@@ -439,6 +442,18 @@ class FaissExactIndex:
     def search_one(self, query: np.ndarray, *, k: int = 10) -> list[RetrievalResult]:
         return self.search(query, k=k)[0]
 
+    def reconstruct_rows(self, rows: Sequence[int]) -> np.ndarray:
+        """Return only requested stored unit descriptors for bounded reranking."""
+
+        positions = [int(row) for row in rows]
+        if len(positions) > 100 or any(row < 0 or row >= self.size for row in positions):
+            raise FaissIndexError("reconstruction requires at most 100 valid rows")
+        return np.ascontiguousarray(
+            np.stack([self._index.reconstruct(row) for row in positions])
+            if positions else np.empty((0, self.descriptor_dim), dtype=np.float32),
+            dtype=np.float32,
+        )
+
     def diagnose_one(
         self,
         query: np.ndarray,
@@ -589,9 +604,6 @@ class FaissExactIndex:
         faiss = _import_faiss()
         try:
             index = faiss.read_index(str(directory / "index.faiss"))
-            expected_index_hash = metadata["artifact_sha256"]["index.faiss"]
-            if _sha256_file(directory / "index.faiss") != expected_index_hash:
-                raise FaissIndexError("SHA-256 mismatch for persisted artifact index.faiss")
         except FaissIndexError:
             raise
         except Exception as exc:

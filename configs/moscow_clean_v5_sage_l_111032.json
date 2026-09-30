@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "candidate_id": "moscow_clean_v5_sage_l_111032_20260930",
+  "index_id": "moscow_clean_v5_sage_l_111032",
+  "gallery_count": 111032,
+  "gallery_sha256": "fa24d16e387ea939536fe2760fe1615327797ad665602421d54e61b473ace39c",
+  "index_dir": "/app/candidate/index",
+  "context_checkpoint": "/app/context.pth",
+  "model": "SAGE ViT-L No-Encoder",
+  "model_sha256": "31212d543304258b22cfce63aa9d433527a086832cfaec7fc9bca99fd53286dc",
+  "query_sizes": [322, 504],
+  "retrieval": "exact cosine against cached reference descriptors",
+  "context_depth": 30,
+  "context_blend": 0.5,
+  "location_selection": "first reference after context reranking",
+  "multi_photo": "top1_then_geographic_consensus_v2",
+  "confidence": "uncalibrated; all coordinates tentative",
+  "source_scope": "contains 67100 research-only MSLS images; public-production rights require separate verification"
+}

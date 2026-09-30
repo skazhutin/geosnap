@@ -16,7 +16,7 @@ def main() -> None:
     if validate_once:
         settings = replace(settings, validate_only=True)
     settings.validate()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, secret=settings.token)
     if validate_once:
         print("GeoSnap Telegram bot configuration is valid; polling disabled.")
         return

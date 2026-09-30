@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>GeoSnap · Разметка снимков</title>
+  <style>
+    :root { --ink:#17323b; --muted:#627982; --line:#d5e1e3; --base:#f2f7f7; --paper:#ffffff; --teal:#087984; --teal-light:#d8eeee; --amber:#bc7026; --amber-light:#fae9d8; --red:#a33d3d; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--base); color:var(--ink); font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .wrap { max-width:1100px; padding:44px 36px 68px; margin:auto; }
+    header { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; padding-bottom:26px; border-bottom:1px solid var(--line); }
+    .brand { font-size:15px; font-weight:750; letter-spacing:-.02em; color:var(--teal); }
+    h1 { margin:8px 0 0; font-size:clamp(31px,4.2vw,52px); line-height:1.08; letter-spacing:-.055em; font-weight:720; }
+    .sub { margin:12px 0 0; color:var(--muted); max-width:58ch; }
+    .live { display:inline-flex; align-items:center; gap:9px; white-space:nowrap; padding:9px 13px; border:1px solid var(--line); border-radius:999px; background:var(--paper); font-size:13px; font-weight:650; }
+    .dot { width:9px; height:9px; border-radius:50%; background:var(--teal); box-shadow:0 0 0 4px var(--teal-light); }
+    .live.stopped .dot { background:var(--red); box-shadow:0 0 0 4px #f4dddd; }
+    .live.finalizing .dot { background:var(--amber); box-shadow:0 0 0 4px var(--amber-light); }
+    main { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(260px,1fr); gap:24px; padding-top:30px; }
+    .primary { background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:32px; }
+    .small-label { color:var(--muted); font-size:14px; }
+    .headline { display:flex; align-items:baseline; flex-wrap:wrap; gap:8px 14px; margin:7px 0 22px; }
+    .percent { font-variant-numeric:tabular-nums; font-size:clamp(60px,8vw,96px); letter-spacing:-.085em; line-height:1; font-weight:740; color:var(--teal); }
+    .fraction { font-size:19px; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .track { width:100%; height:18px; overflow:hidden; display:flex; border-radius:999px; background:#e6eff0; }
+    .track span { display:block; height:100%; transition:width .5s ease; }
+    #valid-fill { background:var(--teal); }
+    #failed-fill { background:var(--amber); }
+    .legend { display:flex; flex-wrap:wrap; gap:14px 28px; margin:17px 0 0; }
+    .legend div { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px; }
+    .swatch { width:10px; height:10px; border-radius:2px; background:var(--teal); }
+    .swatch.amber { background:var(--amber); }
+    .numbers { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-top:36px; padding-top:24px; border-top:1px solid var(--line); }
+    .numbers strong { display:block; font-size:28px; letter-spacing:-.04em; line-height:1.2; font-variant-numeric:tabular-nums; }
+    .numbers span { display:block; color:var(--muted); font-size:13px; margin-top:4px; }
+    .side { display:flex; flex-direction:column; gap:24px; }
+    .panel { background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:24px; }
+    h2 { margin:0 0 17px; font-size:18px; letter-spacing:-.025em; }
+    .eta { font-size:32px; letter-spacing:-.045em; line-height:1.12; font-weight:720; font-variant-numeric:tabular-nums; }
+    .detail { margin:9px 0 0; color:var(--muted); font-size:14px; }
+    .steps { list-style:none; margin:0; padding:0; }
+    .steps li { display:flex; align-items:center; gap:11px; min-height:35px; font-size:14px; color:var(--muted); }
+    .steps li + li { border-top:1px solid #edf2f3; }
+    .step-dot { display:grid; place-items:center; flex:none; width:17px; height:17px; border:1px solid #b9cdd0; border-radius:50%; font-size:12px; }
+    .steps li.done { color:var(--ink); }
+    .steps li.done .step-dot { background:var(--teal); border-color:var(--teal); color:white; }
+    footer { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px 24px; margin-top:25px; color:var(--muted); font-size:13px; }
+    #error { display:none; background:#fde8e8; color:#803333; border-radius:10px; padding:11px 14px; margin-top:20px; }
+    #error.visible { display:block; }
+    @media (max-width:760px) { .wrap { padding:25px 18px 45px; } header { flex-direction:column; gap:18px; } main { grid-template-columns:1fr; } .primary { padding:24px; } .numbers { gap:9px; } .numbers strong { font-size:23px; } }
+    @media (prefers-reduced-motion:reduce) { .track span { transition:none; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div><div class="brand">GeoSnap / исследование</div><h1>Разметка снимков</h1><p class="sub">Автоматическая оценка качества и геолокационной полезности 1 184 тестовых изображений.</p></div>
+      <div id="live" class="live" role="status"><span class="dot" aria-hidden="true"></span><span id="state">Загрузка…</span></div>
+    </header>
+    <div id="error" role="alert"></div>
+    <main>
+      <section class="primary" aria-labelledby="progress-label">
+        <div id="progress-label" class="small-label">Обработано</div>
+        <div class="headline"><div id="percent" class="percent">—</div><div id="fraction" class="fraction">из 1 184</div></div>
+        <div class="track" role="progressbar" aria-label="Прогресс обработки" aria-valuemin="0" aria-valuemax="1184" aria-valuenow="0" id="progress-track"><span id="valid-fill"></span><span id="failed-fill"></span></div>
+        <div class="legend"><div><span class="swatch" aria-hidden="true"></span><span id="valid-legend">Размечено: —</span></div><div><span class="swatch amber" aria-hidden="true"></span><span id="failed-legend">Требует проверки: —</span></div></div>
+        <div class="numbers">
+          <div><strong id="passes">—</strong><span>готовых проходов VLM</span></div>
+          <div><strong id="rate">—</strong><span>снимков в час</span></div>
+          <div><strong id="partial">—</strong><span>снимков в работе</span></div>
+        </div>
+      </section>
+      <div class="side">
+        <section class="panel" aria-labelledby="eta-label"><h2 id="eta-label">До завершения</h2><div id="eta" class="eta">Считаем…</div><p id="finish" class="detail">Оценка по последним 60 снимкам.</p></section>
+        <section class="panel" aria-labelledby="stages-label"><h2 id="stages-label">После разметки</h2><ol id="stages" class="steps"></ol></section>
+      </div>
+    </main>
+    <footer><span>Данные обновляются каждые 5 секунд. Ошибки сохраняются явно и проверяются перед отчётом.</span><span id="updated">—</span></footer>
+  </div>
+  <script>
+    const $ = id => document.getElementById(id);
+    const nf = new Intl.NumberFormat('ru-RU');
+    const fmtDate = value => new Intl.DateTimeFormat('ru-RU', {timeZone:'Europe/Moscow', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}).format(value);
+    const duration = seconds => {
+      if (seconds == null) return 'Пока нет оценки';
+      const hours = Math.floor(seconds / 3600), minutes = Math.round((seconds % 3600) / 60);
+      return hours > 0 ? `≈ ${hours} ч ${minutes} мин` : `≈ ${minutes} мин`;
+    };
+    async function refresh() {
+      try {
+        const response = await fetch('/api/status', {cache:'no-store'});
+        if (!response.ok) throw new Error(`Сервер ответил ${response.status}`);
+        const data = await response.json();
+        $('error').classList.remove('visible');
+        const pct = data.total ? data.processed / data.total * 100 : 0;
+        $('percent').textContent = `${pct.toFixed(1).replace('.', ',')}%`;
+        $('fraction').textContent = `${nf.format(data.processed)} из ${nf.format(data.total)}`;
+        $('valid-fill').style.width = `${data.valid / data.total * 100}%`;
+        $('failed-fill').style.width = `${data.failed / data.total * 100}%`;
+        $('progress-track').setAttribute('aria-valuemax', data.total);
+        $('progress-track').setAttribute('aria-valuenow', data.processed);
+        $('valid-legend').textContent = `Размечено: ${nf.format(data.valid)}`;
+        $('failed-legend').textContent = `Требует проверки: ${nf.format(data.failed)}`;
+        $('passes').textContent = `${nf.format(data.passes.reduce((a,b) => a+b, 0))} / ${nf.format(data.pass_total)}`;
+        $('rate').textContent = data.rate_per_hour == null ? '—' : data.rate_per_hour.toFixed(0);
+        $('partial').textContent = nf.format(data.partial);
+        const states = {running:'Разметка идёт', stopped:'Процесс остановлен', finalizing:'Готовим отчёт', complete:'Отчёт готов'};
+        $('state').textContent = states[data.state] || 'Состояние неизвестно';
+        $('live').className = `live ${data.state}`;
+        $('eta').textContent = data.state === 'complete' ? 'Готово' : data.state === 'finalizing' ? 'Финализация' : duration(data.eta_seconds);
+        $('finish').textContent = data.state === 'running' && data.eta_seconds != null
+          ? `Ориентир: ${fmtDate(new Date(Date.now() + data.eta_seconds * 1000))} МСК. По последним 60 снимкам.`
+          : data.state === 'stopped' ? 'Расчёт времени остановлен вместе с процессом.'
+          : data.state === 'complete' ? 'Все артефакты и проверка целостности готовы.'
+          : 'Оценка по последним 60 снимкам.';
+        $('stages').replaceChildren(...data.stages.map(stage => {
+          const li = document.createElement('li'); li.className = stage.complete ? 'done' : '';
+          const dot = document.createElement('span'); dot.className = 'step-dot'; dot.textContent = stage.complete ? '✓' : '';
+          dot.setAttribute('aria-hidden','true');
+          const name = document.createElement('span'); name.textContent = stage.name;
+          li.append(dot,name); return li;
+        }));
+        $('updated').textContent = `Обновлено ${fmtDate(new Date(data.server_time))} МСК`;
+      } catch (error) {
+        $('error').textContent = `Не удалось обновить данные. ${error.message}. Повторим через 5 секунд.`;
+        $('error').classList.add('visible');
+        $('state').textContent = 'Нет связи'; $('live').className = 'live stopped';
+      }
+    }
+    refresh(); setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

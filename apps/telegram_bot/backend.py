@@ -42,18 +42,49 @@ class BackendClient:
     base_url: str
     timeout_seconds: float
     client: httpx.AsyncClient | None = None
+    batch_timeout_seconds: float = 210.0
 
     async def localize(self, image: bytes, *, request_id: str) -> dict[str, Any]:
+        return await self._post("/localize", [("image", ("telegram.jpg", image, "image/jpeg"))], request_id, self.timeout_seconds)
+
+    async def localize_multi(self, images: list[bytes], *, request_id: str) -> dict[str, Any]:
+        if not 1 <= len(images) <= 10:
+            raise BackendRejectedImage("Provide one to ten photos")
+        result = await self._post(
+            "/localize/multi", [("images", (f"view-{i}.jpg", image, "image/jpeg")) for i, image in enumerate(images)],
+            request_id, self.batch_timeout_seconds,
+        )
+        metadata = result.get("multi_photo")
+        if not isinstance(metadata, dict):
+            raise InvalidBackendResponse("multi-photo evidence is missing")
+        counts = [metadata.get(k) for k in ("submitted_images", "unique_images", "duplicate_images", "supporting_images")]
+        if any(not isinstance(n, int) or isinstance(n, bool) for n in counts):
+            raise InvalidBackendResponse("invalid multi-photo counts")
+        submitted, unique, duplicates, support = counts
+        if not (submitted == len(images) and 1 <= unique <= submitted and duplicates == submitted - unique and 0 <= support <= unique):
+            raise InvalidBackendResponse("inconsistent multi-photo evidence")
+        if metadata.get("agreement") not in {"single", "consensus", "ambiguous", "no_candidates"}:
+            raise InvalidBackendResponse("unknown multi-photo agreement")
+        if (unique == 1) != (metadata["agreement"] == "single"):
+            raise InvalidBackendResponse("inconsistent single-photo agreement")
+        if metadata["agreement"] == "consensus" and (support < 2 or not result.get("prediction")):
+            raise InvalidBackendResponse("consensus has insufficient evidence")
+        if unique > 1 and (result["status"] == "ok" or (metadata["agreement"] != "consensus" and result.get("prediction"))):
+            raise InvalidBackendResponse("uncalibrated multi-photo result was incorrectly accepted")
+        return result
+
+    async def _post(self, endpoint: str, files: list, request_id: str, timeout: float) -> dict[str, Any]:
         owns_client = self.client is None
         client = self.client or httpx.AsyncClient(
-            timeout=httpx.Timeout(self.timeout_seconds),
+            timeout=httpx.Timeout(timeout),
             follow_redirects=False,
         )
         try:
             try:
                 response = await client.post(
-                    f"{self.base_url}/localize",
-                    files={"image": ("telegram.jpg", image, "image/jpeg")},
+                    f"{self.base_url}{endpoint}",
+                    files=files,
+                    timeout=timeout,
                     headers={"X-Request-ID": request_id, "Accept": "application/json"},
                 )
             except httpx.TimeoutException as exc:
@@ -73,6 +104,8 @@ class BackendClient:
             raise BackendUnavailable("backend is not ready")
         if response.status_code >= 500:
             raise BackendUnavailable("backend internal error")
+        if not 200 <= response.status_code < 300:
+            raise InvalidBackendResponse("unexpected backend HTTP status")
         try:
             payload = response.json()
         except ValueError as exc:
