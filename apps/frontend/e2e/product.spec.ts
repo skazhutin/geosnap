@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const TILE = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/2p2zWQAAAABJRU5ErkJggg==",
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP48OHDfwAJdAPQXHvArAAAAABJRU5ErkJggg==",
   "base64",
 );
 
@@ -39,7 +39,7 @@ async function prepare(page: Page, status = "ok") {
     const text = message.text();
     const isHeadlessDriverNoise = message.type() === "warning" && /GL Driver Message.*GPU stall due to ReadPixels/.test(text);
     if (!isHeadlessDriverNoise && (message.type() === "error" || message.type() === "warning")) {
-      throw new Error(`browser console ${message.type()}: ${text}`);
+      throw new Error(`browser console ${message.type()}: ${text} (${message.location().url})`);
     }
   });
   page.on("pageerror", (error) => {
@@ -57,6 +57,9 @@ async function upload(page: Page) {
   });
   await expect(page.getByRole("button", { name: "Replace" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove selected photo" })).toBeVisible();
+  await expect.poll(() => page.getByAltText("Selected street photo preview").evaluate(
+    (image: HTMLImageElement) => image.complete && image.naturalWidth > 0,
+  )).toBe(true);
   await page.getByRole("button", { name: "Estimate location" }).click();
 }
 

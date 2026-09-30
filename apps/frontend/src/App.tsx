@@ -313,21 +313,22 @@ function ErrorResult({ state, onRetry }: {
 
 function App() {
   const [ui, setUi] = useState<UiState>({ phase: "idle" });
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ file: File; url: string } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [coverageVisible, setCoverageVisible] = useState(() => new URLSearchParams(window.location.search).get("coverage") === "1");
   const fileInput = useRef<HTMLInputElement>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const requestSequence = useRef(0);
   const file = stateFile(ui);
+  const previewUrl = preview?.file === file ? preview.url : null;
 
   useEffect(() => {
     if (!file || !SUPPORTED_IMAGE_TYPES.has(file.type)) {
-      setPreviewUrl(null);
+      setPreview(null);
       return undefined;
     }
     const objectUrl = URL.createObjectURL(file);
-    setPreviewUrl(objectUrl);
+    setPreview({ file, url: objectUrl });
     return () => URL.revokeObjectURL(objectUrl);
   }, [file]);
 

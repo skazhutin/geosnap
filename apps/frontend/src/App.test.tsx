@@ -100,6 +100,27 @@ describe("GeoSnap product UI", () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:query-preview");
   });
 
+  it("never renders a revoked preview when another photo is selected", async () => {
+    const revoked = new Set<string>();
+    const stalePreviews: string[] = [];
+    let serial = 0;
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation((url) => { revoked.add(url); });
+    vi.spyOn(URL, "createObjectURL").mockImplementation(() => {
+      const current = screen.queryByAltText(/selected street photo preview/i)?.getAttribute("src");
+      if (current && revoked.has(current)) stalePreviews.push(current);
+      return `blob:photo-${++serial}`;
+    });
+    const { unmount } = render(<App />);
+    const user = await selectPhoto("first.jpg");
+    await user.click(screen.getByRole("button", { name: /remove selected photo/i }));
+    await selectPhoto("second.jpg");
+    await selectPhoto("third.jpg");
+    expect(screen.getByAltText(/selected street photo preview/i)).toHaveAttribute("src", "blob:photo-3");
+    expect(stalePreviews).toEqual([]);
+    unmount();
+    expect([...revoked]).toEqual(["blob:photo-1", "blob:photo-2", "blob:photo-3"]);
+  });
+
   it("accepts drag and drop", () => {
     render(<App />);
     const panel = screen.getByRole("complementary");

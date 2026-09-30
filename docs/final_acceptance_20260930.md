@@ -2,9 +2,11 @@
 
 GeoSnap's final source handoff includes the website, Telegram client with up to ten photos per place, API, cleaned-gallery runtime, reproducible research code, and the preserved research history. The published `main` commit containing this report defines the final source version. No new localization experiment or accuracy estimate was produced during acceptance.
 
-## Final correction
+## Final corrections
 
 Cancelling a single-photo HTTP request could release its inference slot while shielded background work was still running. The route now retains capacity until that work finishes, matching the multi-photo route. Two regression cases verify cancellation and subsequent capacity recovery for both endpoints. This changes request resource management; model selection and geographic scoring are unchanged.
+
+Replacing a photo could briefly render the previous file's revoked object URL. The preview now renders only when its file identity matches the selected file. A regression test fails before this fix and passes after it, and checks that every created URL is released. The browser fixture was also a malformed PNG; it has been replaced with a decodable PNG, and every browser upload now verifies that the preview actually loads. The initial acceptance CI failure is preserved in [run 36699250410](https://github.com/skazhutin/geosnap/actions/runs/36699250410), rather than treated as a successful freeze.
 
 ## Verification
 
@@ -13,8 +15,9 @@ Cancelling a single-photo HTTP request could release its inference slot while sh
 | Python product/core suite after the correction | 466 passed, 1 skipped; the skip explicitly opts out of downloading the MegaLoc checkpoint |
 | Python lint, locked dependencies, diff whitespace | Passed |
 | API and multi-photo targeted suite | 46 passed, including both cancellation cases |
-| Frontend unit tests | 26 passed on published commit `38f493d`; frontend source is unchanged in this acceptance patch |
-| Browser scenarios | 24 passed across desktop Chromium, WebKit and mobile Chromium on `38f493d`, including reduced motion and viewport changes |
+| Frontend unit tests after the preview correction | 27 passed, including replacement/removal and revoked-URL regression coverage |
+| Browser scenarios after the preview correction | 24 passed without retries across desktop Chromium, WebKit and mobile Chromium, including decoded previews, reduced motion and viewport changes |
+| Local frontend production build | Passed; MapLibre's existing lazy-loaded map chunk still produces the bundle-size advisory |
 | Frontend and three deployment container builds | Passed in [CI for `38f493d`](https://github.com/skazhutin/geosnap/actions/runs/36690099427) |
 | Fixture image → embedding → FAISS → API and unprovisioned Docker smoke | Passed in the same CI; the latter returns healthy liveness and unready model status |
 | Production and development Compose configurations | Passed |
