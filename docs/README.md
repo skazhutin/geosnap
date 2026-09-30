@@ -1,6 +1,6 @@
 # GeoSnap documentation map
 
-Updated 2026-09-30. Start with the root [README](../README.md) for setup and product behavior. This page separates the deployable system, current research, and historical evidence; a newer file date alone does not make two results comparable. Docker Desktop on the original Mac is currently stopped at the user's request.
+Updated 2026-09-30. Start with the root [README](../README.md) for setup and product behavior. This page separates the deployable system, current research, and historical evidence; a newer file date alone does not make two results comparable. The [final acceptance snapshot](final_acceptance_20260930.md) records the verified product state and its remaining limits. GeoSnap services on the original Mac are stopped.
 
 For a chronological account of the project, including decisions that were later superseded, read the [research and product history](history.md).
 
@@ -9,6 +9,7 @@ For a chronological account of the project, including decisions that were later 
 | Document | Use it for |
 | --- | --- |
 | [Architecture](architecture.md) | Components and the frozen runtime boundary |
+| [Final acceptance and product freeze](final_acceptance_20260930.md) | Final checks, artifact identities, scope of the source freeze, and known limitations |
 | [Deployment](deployment.md) | Provisioning, Compose, HTTPS, and operational checks |
 | [Cleaned SAGE-L local rollout](cleaned_sage_l_local_rollout_20260930.md) | Opt-in 111,032-image candidate, exact identity, six-photo HTTP check, latency, and rollback |
 | [Operations](operations.md) | Running and troubleshooting the service |

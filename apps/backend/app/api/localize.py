@@ -189,6 +189,9 @@ async def localize(
             except TimeoutError as exc:
                 lease.defer_until(inference_task)
                 raise LocalizationTimeoutError() from exc
+            except asyncio.CancelledError:
+                lease.defer_until(inference_task)
+                raise
         stage = "response_contract"
         result = coerce_result(raw_result)
         payload = public_result(raw_result, prepared, request.state.request_id, (perf_counter() - started) * 1000.0)

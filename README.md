@@ -19,7 +19,7 @@ Telegram -> Bot API -> lightweight bot -> internal FastAPI /localize or /localiz
                                            +-- validated frozen volume or read-only local candidate index
 ```
 
-FastAPI is the only localization authority. The bot has no Torch, SAGE, or FAISS dependency. The Docker topology uses one CPU model worker, bounded inference concurrency and queueing, per-client rate limiting, structured logs, internal Prometheus metrics, strict readiness, same-origin browser routing, and Caddy TLS/security headers. Docker is currently stopped on the original Mac; these services are not live until it is started again.
+FastAPI is the only localization authority. The bot has no Torch, SAGE, or FAISS dependency. The Docker topology uses one CPU model worker, bounded inference concurrency and queueing, per-client rate limiting, structured logs, internal Prometheus metrics, strict readiness, same-origin browser routing, and Caddy TLS/security headers. The local GeoSnap services were stopped after verification; use the deployment commands below to start the selected runtime.
 
 ## Product flow
 
@@ -83,6 +83,7 @@ For `low_confidence`, the API may retain the best candidate coordinates. Under t
 ## Documentation
 
 - [Documentation map: current versus historical](docs/README.md)
+- [Final acceptance and product freeze](docs/final_acceptance_20260930.md)
 - [Project history and decisions](docs/history.md)
 - [Architecture](docs/architecture.md)
 - [Deployment](docs/deployment.md)
